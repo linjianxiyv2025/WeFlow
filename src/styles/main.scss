@@ -153,6 +153,43 @@
   --sent-card-bg: var(--primary);
 }
 
+// 繁花如梦 - 浅色（晨曦花境）
+[data-theme="blossom-dream"][data-mode="light"],
+[data-theme="blossom-dream"]:not([data-mode]) {
+  // 三色定义（供伪元素光晕使用，饱和度提高以便在底色上可见）
+  --blossom-pink: #F0A0B8;
+  --blossom-peach: #FFB07A;
+  --blossom-blue: #90B8E0;
+
+  // 主品牌色：Pantone 粉晶 Rose Quartz
+  --primary: #D4849A;
+  --primary-rgb: 212, 132, 154;
+  --primary-hover: #C4748A;
+  --primary-light: rgba(212, 132, 154, 0.12);
+
+  // 背景三层：主背景最深（相对），面板次之，卡片最白
+  --bg-primary: #F5EDF2;
+  --bg-secondary: rgba(255, 255, 255, 0.82);
+  --bg-tertiary: rgba(212, 132, 154, 0.06);
+  --bg-hover: rgba(212, 132, 154, 0.09);
+
+  // 文字：提高对比度，主色接近纯黑只带微弱紫调
+  --text-primary: #1E1A22;
+  --text-secondary: #6B5F70;
+  --text-tertiary: #9A8A9E;
+  // 边框：粉色半透明，有存在感但不强硬
+  --border-color: rgba(212, 132, 154, 0.18);
+
+  --bg-gradient: linear-gradient(150deg, #F5EDF2 0%, #F0EAF6 50%, #EAF0F8 100%);
+  --primary-gradient: linear-gradient(135deg, #D4849A 0%, #E8A8B8 100%);
+
+  // 卡片：高不透明度白，与背景形成明显层次
+  --card-bg: rgba(255, 255, 255, 0.88);
+  --card-inner-bg: rgba(255, 255, 255, 0.95);
+
+  --sent-card-bg: var(--primary);
+}
+
 // ==================== 深色主题 ====================
 
 // 云上舞白 - 深色
@@ -163,6 +200,7 @@
   --primary-light: rgba(201, 168, 108, 0.15);
   --bg-primary: #1a1816;
   --bg-secondary: rgba(40, 36, 32, 0.9);
+  --bg-secondary-solid: #282420;
   --bg-tertiary: rgba(255, 255, 255, 0.05);
   --bg-hover: rgba(255, 255, 255, 0.08);
   --text-primary: #F0EEE9;
@@ -184,6 +222,7 @@
   --primary-light: rgba(106, 154, 170, 0.15);
   --bg-primary: #141a1c;
   --bg-secondary: rgba(30, 40, 44, 0.9);
+  --bg-secondary-solid: #1e282c;
   --bg-tertiary: rgba(255, 255, 255, 0.05);
   --bg-hover: rgba(255, 255, 255, 0.08);
   --text-primary: #E8EEF0;
@@ -205,6 +244,7 @@
   --primary-light: rgba(154, 186, 124, 0.15);
   --bg-primary: #161a14;
   --bg-secondary: rgba(34, 42, 30, 0.9);
+  --bg-secondary-solid: #222a1e;
   --bg-tertiary: rgba(255, 255, 255, 0.05);
   --bg-hover: rgba(255, 255, 255, 0.08);
   --text-primary: #E8F0E4;
@@ -226,6 +266,7 @@
   --primary-light: rgba(192, 96, 104, 0.15);
   --bg-primary: #1a1416;
   --bg-secondary: rgba(42, 32, 34, 0.9);
+  --bg-secondary-solid: #2a2022;
   --bg-tertiary: rgba(255, 255, 255, 0.05);
   --bg-hover: rgba(255, 255, 255, 0.08);
   --text-primary: #F0E8E8;
@@ -247,6 +288,7 @@
   --primary-light: rgba(122, 186, 170, 0.15);
   --bg-primary: #121a1a;
   --bg-secondary: rgba(28, 42, 42, 0.9);
+  --bg-secondary-solid: #1c2a2a;
   --bg-tertiary: rgba(255, 255, 255, 0.05);
   --bg-hover: rgba(255, 255, 255, 0.08);
   --text-primary: #E4F0F0;
@@ -257,6 +299,43 @@
   --primary-gradient: linear-gradient(135deg, #5A8A8A 0%, #7ABAAA 100%);
   --card-bg: rgba(28, 42, 42, 0.9);
   --card-inner-bg: #1B2828;
+  --sent-card-bg: var(--primary);
+}
+
+// 繁花如梦 - 深色（夜阑幽梦）
+[data-theme="blossom-dream"][data-mode="dark"] {
+  // 光晕色（供伪元素使用，降低饱和度避免刺眼）
+  --blossom-pink: #C670C3;
+  --blossom-purple: #5F4B8B;
+  --blossom-blue: #3A2A50;
+
+  // 主品牌色：藕粉/烟紫粉，降饱和度不刺眼
+  --primary: #D19EBB;
+  --primary-rgb: 209, 158, 187;
+  --primary-hover: #DDB0C8;
+  --primary-light: rgba(209, 158, 187, 0.15);
+
+  // 背景三层：极深黑灰底（去掉紫薯色），面板略浅，卡片再浅一级
+  --bg-primary: #151316;
+  --bg-secondary: rgba(34, 30, 36, 0.92);
+  --bg-secondary-solid: #221E24;
+  --bg-tertiary: rgba(255, 255, 255, 0.04);
+  --bg-hover: rgba(209, 158, 187, 0.1);
+
+  // 文字
+  --text-primary: #F0EAF4;
+  --text-secondary: #A898AE;
+  --text-tertiary: #6A5870;
+  // 边框：极细白色内发光，剥离层级
+  --border-color: rgba(255, 255, 255, 0.07);
+
+  --bg-gradient: linear-gradient(150deg, #151316 0%, #1A1620 50%, #131018 100%);
+  --primary-gradient: linear-gradient(135deg, #D19EBB 0%, #A878A8 100%);
+
+  // 卡片：比面板更亮一档，用深灰而非紫色
+  --card-bg: rgba(42, 38, 46, 0.92);
+  --card-inner-bg: rgba(52, 48, 56, 0.96);
+
   --sent-card-bg: var(--primary);
 }
 

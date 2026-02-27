@@ -63,6 +63,10 @@ export class WcdbCore {
   private wcdbGetVoiceData: any = null
   private wcdbGetSnsTimeline: any = null
   private wcdbGetSnsAnnualStats: any = null
+  private wcdbInstallSnsBlockDeleteTrigger: any = null
+  private wcdbUninstallSnsBlockDeleteTrigger: any = null
+  private wcdbCheckSnsBlockDeleteTrigger: any = null
+  private wcdbDeleteSnsPost: any = null
   private wcdbVerifyUser: any = null
   private wcdbStartMonitorPipe: any = null
   private wcdbStopMonitorPipe: any = null
@@ -598,6 +602,34 @@ export class WcdbCore {
         this.wcdbGetSnsAnnualStats = this.lib.func('int32 wcdb_get_sns_annual_stats(int64 handle, int32 begin, int32 end, _Out_ void** outJson)')
       } catch {
         this.wcdbGetSnsAnnualStats = null
+      }
+
+      // wcdb_status wcdb_install_sns_block_delete_trigger(wcdb_handle handle, char** out_error)
+      try {
+        this.wcdbInstallSnsBlockDeleteTrigger = this.lib.func('int32 wcdb_install_sns_block_delete_trigger(int64 handle, _Out_ void** outError)')
+      } catch {
+        this.wcdbInstallSnsBlockDeleteTrigger = null
+      }
+
+      // wcdb_status wcdb_uninstall_sns_block_delete_trigger(wcdb_handle handle, char** out_error)
+      try {
+        this.wcdbUninstallSnsBlockDeleteTrigger = this.lib.func('int32 wcdb_uninstall_sns_block_delete_trigger(int64 handle, _Out_ void** outError)')
+      } catch {
+        this.wcdbUninstallSnsBlockDeleteTrigger = null
+      }
+
+      // wcdb_status wcdb_check_sns_block_delete_trigger(wcdb_handle handle, int32_t* out_installed)
+      try {
+        this.wcdbCheckSnsBlockDeleteTrigger = this.lib.func('int32 wcdb_check_sns_block_delete_trigger(int64 handle, _Out_ int32* outInstalled)')
+      } catch {
+        this.wcdbCheckSnsBlockDeleteTrigger = null
+      }
+
+      // wcdb_status wcdb_delete_sns_post(wcdb_handle handle, const char* post_id, char** out_error)
+      try {
+        this.wcdbDeleteSnsPost = this.lib.func('int32 wcdb_delete_sns_post(int64 handle, const char* postId, _Out_ void** outError)')
+      } catch {
+        this.wcdbDeleteSnsPost = null
       }
 
       // Named pipe IPC for monitoring (replaces callback)
@@ -1813,6 +1845,94 @@ export class WcdbCore {
       return { success: false, error: String(e) }
     }
   }
+  /**
+   * 为朋友圈安装删除
+   */
+  async installSnsBlockDeleteTrigger(): Promise<{ success: boolean; alreadyInstalled?: boolean; error?: string }> {
+    if (!this.ensureReady()) return { success: false, error: 'WCDB 未连接' }
+    if (!this.wcdbInstallSnsBlockDeleteTrigger) return { success: false, error: '当前 DLL 版本不支持此功能' }
+    try {
+      const outPtr = [null]
+      const status = this.wcdbInstallSnsBlockDeleteTrigger(this.handle, outPtr)
+      let msg = ''
+      if (outPtr[0]) {
+        try { msg = this.koffi.decode(outPtr[0], 'char', -1) } catch { }
+        try { this.wcdbFreeString(outPtr[0]) } catch { }
+      }
+      if (status === 1) {
+        // DLL 返回 1 表示已安装
+        return { success: true, alreadyInstalled: true }
+      }
+      if (status !== 0) {
+        return { success: false, error: msg || `DLL error ${status}` }
+      }
+      return { success: true, alreadyInstalled: false }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  /**
+   * 关闭朋友圈删除拦截
+   */
+  async uninstallSnsBlockDeleteTrigger(): Promise<{ success: boolean; error?: string }> {
+    if (!this.ensureReady()) return { success: false, error: 'WCDB 未连接' }
+    if (!this.wcdbUninstallSnsBlockDeleteTrigger) return { success: false, error: '当前 DLL 版本不支持此功能' }
+    try {
+      const outPtr = [null]
+      const status = this.wcdbUninstallSnsBlockDeleteTrigger(this.handle, outPtr)
+      let msg = ''
+      if (outPtr[0]) {
+        try { msg = this.koffi.decode(outPtr[0], 'char', -1) } catch { }
+        try { this.wcdbFreeString(outPtr[0]) } catch { }
+      }
+      if (status !== 0) {
+        return { success: false, error: msg || `DLL error ${status}` }
+      }
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  /**
+   * 查询朋友圈删除拦截是否已安装
+   */
+  async checkSnsBlockDeleteTrigger(): Promise<{ success: boolean; installed?: boolean; error?: string }> {
+    if (!this.ensureReady()) return { success: false, error: 'WCDB 未连接' }
+    if (!this.wcdbCheckSnsBlockDeleteTrigger) return { success: false, error: '当前 DLL 版本不支持此功能' }
+    try {
+      const outInstalled = [0]
+      const status = this.wcdbCheckSnsBlockDeleteTrigger(this.handle, outInstalled)
+      if (status !== 0) {
+        return { success: false, error: `DLL error ${status}` }
+      }
+      return { success: true, installed: outInstalled[0] === 1 }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async deleteSnsPost(postId: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.ensureReady()) return { success: false, error: 'WCDB 未连接' }
+    if (!this.wcdbDeleteSnsPost) return { success: false, error: '当前 DLL 版本不支持此功能' }
+    try {
+      const outPtr = [null]
+      const status = this.wcdbDeleteSnsPost(this.handle, postId, outPtr)
+      let msg = ''
+      if (outPtr[0]) {
+        try { msg = this.koffi.decode(outPtr[0], 'char', -1) } catch { }
+        try { this.wcdbFreeString(outPtr[0]) } catch { }
+      }
+      if (status !== 0) {
+        return { success: false, error: msg || `DLL error ${status}` }
+      }
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
   async getDualReportStats(sessionId: string, beginTimestamp: number = 0, endTimestamp: number = 0): Promise<{ success: boolean; data?: any; error?: string }> {
     if (!this.ensureReady()) {
       return { success: false, error: 'WCDB 未连接' }

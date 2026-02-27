@@ -4,6 +4,48 @@
   flex-direction: column;
   background: var(--bg-primary);
   animation: appFadeIn 0.35s ease-out;
+  position: relative;
+  overflow: hidden;
+}
+
+// 繁花如梦：底色层（::before）+ 光晕层（::after）分离，避免 blur 吃掉边缘
+[data-theme="blossom-dream"] .app-container {
+  background: transparent;
+}
+
+// ::before 纯底色，不模糊
+[data-theme="blossom-dream"] .app-container::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: -2;
+  background: var(--bg-primary);
+}
+
+// ::after 光晕层，模糊叠加在底色上
+[data-theme="blossom-dream"] .app-container::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse 55% 45% at 15% 20%, var(--blossom-pink) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 40% at 85% 75%, var(--blossom-peach) 0%, transparent 65%),
+    radial-gradient(ellipse 45% 50% at 80% 10%, var(--blossom-blue) 0%, transparent 60%);
+  filter: blur(80px);
+  opacity: 0.75;
+}
+
+// 深色模式光晕更克制
+[data-theme="blossom-dream"][data-mode="dark"] .app-container::after {
+  background:
+    radial-gradient(ellipse 55% 45% at 15% 20%, var(--blossom-pink) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 40% at 85% 75%, var(--blossom-purple) 0%, transparent 65%),
+    radial-gradient(ellipse 45% 50% at 80% 10%, var(--blossom-blue) 0%, transparent 60%);
+  filter: blur(100px);
+  opacity: 0.2;
 }
 
 .window-drag-region {

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-export type ThemeId = 'cloud-dancer' | 'corundum-blue' | 'kiwi-green' | 'spicy-red' | 'teal-water'
+export type ThemeId = 'cloud-dancer' | 'corundum-blue' | 'kiwi-green' | 'spicy-red' | 'teal-water' | 'blossom-dream'
 export type ThemeMode = 'light' | 'dark' | 'system'
 
 export interface ThemeInfo {
@@ -10,6 +10,8 @@ export interface ThemeInfo {
   description: string
   primaryColor: string
   bgColor: string
+  // 可选副色，用于多彩主题的渐变预览
+  accentColor?: string
 }
 
 export const themes: ThemeInfo[] = [
@@ -19,6 +21,14 @@ export const themes: ThemeInfo[] = [
     description: 'Pantone 2026 年度色',
     primaryColor: '#8B7355',
     bgColor: '#F0EEE9'
+  },
+  {
+    id: 'blossom-dream',
+    name: '繁花如梦',
+    description: '晨曦花境 · 夜阑幽梦',
+    primaryColor: '#D4849A',
+    bgColor: '#FCF9FB',
+    accentColor: '#FFBE98'
   },
   {
     id: 'corundum-blue',

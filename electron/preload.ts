@@ -294,7 +294,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('sns:exportProgress', (_, payload) => callback(payload))
       return () => ipcRenderer.removeAllListeners('sns:exportProgress')
     },
-    selectExportDir: () => ipcRenderer.invoke('sns:selectExportDir')
+    selectExportDir: () => ipcRenderer.invoke('sns:selectExportDir'),
+    installBlockDeleteTrigger: () => ipcRenderer.invoke('sns:installBlockDeleteTrigger'),
+    uninstallBlockDeleteTrigger: () => ipcRenderer.invoke('sns:uninstallBlockDeleteTrigger'),
+    checkBlockDeleteTrigger: () => ipcRenderer.invoke('sns:checkBlockDeleteTrigger'),
+    deleteSnsPost: (postId: string) => ipcRenderer.invoke('sns:deleteSnsPost', postId),
+    downloadEmoji: (params: { url: string; encryptUrl?: string; aesKey?: string }) => ipcRenderer.invoke('sns:downloadEmoji', params)
   },
 
   // HTTP API 服务

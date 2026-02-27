@@ -104,3 +104,30 @@
     color: var(--text-primary);
   }
 }
+
+// 繁花如梦主题：侧边栏毛玻璃 + 激活项用主品牌色
+[data-theme="blossom-dream"] .sidebar {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-right: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+[data-theme="blossom-dream"][data-mode="dark"] .sidebar {
+  background: rgba(34, 30, 36, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+// 激活项：主品牌色纵向微渐变
+[data-theme="blossom-dream"] .nav-item.active {
+  background: linear-gradient(180deg, #D4849A 0%, #C4748A 100%);
+}
+
+// 深色激活项：用藕粉色，背景深灰底 + 粉色文字/图标（高阶玩法）
+[data-theme="blossom-dream"][data-mode="dark"] .nav-item.active {
+  background: rgba(209, 158, 187, 0.15);
+  color: #D19EBB;
+  border: 1px solid rgba(209, 158, 187, 0.2);
+}

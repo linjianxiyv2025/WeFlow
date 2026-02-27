@@ -82,6 +82,8 @@ let configService: ConfigService | null = null
 // 协议窗口实例
 let agreementWindow: BrowserWindow | null = null
 let onboardingWindow: BrowserWindow | null = null
+// Splash 启动窗口
+let splashWindow: BrowserWindow | null = null
 const keyService = new KeyService()
 
 let mainWindowReady = false
@@ -122,9 +124,10 @@ function createWindow(options: { autoShow?: boolean } = {}) {
   })
 
   // 窗口准备好后显示
+  // Splash 模式下不在这里 show，由启动流程统一控制
   win.once('ready-to-show', () => {
     mainWindowReady = true
-    if (autoShow || shouldShowMain) {
+    if (autoShow && !splashWindow) {
       win.show()
     }
   })
@@ -248,6 +251,73 @@ function createAgreementWindow() {
   })
 
   return agreementWindow
+}
+
+/**
+ * 创建 Splash 启动窗口
+ * 使用纯 HTML 页面，不依赖 React，确保极速显示
+ */
+function createSplashWindow(): BrowserWindow {
+  const isDev = !!process.env.VITE_DEV_SERVER_URL
+  const iconPath = isDev
+    ? join(__dirname, '../public/icon.ico')
+    : join(process.resourcesPath, 'icon.ico')
+
+  splashWindow = new BrowserWindow({
+    width: 760,
+    height: 460,
+    resizable: false,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    center: true,
+    skipTaskbar: false,
+    icon: iconPath,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false
+      // 不需要 preload —— 通过 executeJavaScript 单向推送进度
+    },
+    show: false
+  })
+
+  if (isDev) {
+    splashWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}splash.html`)
+  } else {
+    splashWindow.loadFile(join(__dirname, '../dist/splash.html'))
+  }
+
+  splashWindow.once('ready-to-show', () => {
+    splashWindow?.show()
+  })
+
+  splashWindow.on('closed', () => {
+    splashWindow = null
+  })
+
+  return splashWindow
+}
+
+/**
+ * 向 Splash 窗口发送进度更新
+ */
+function updateSplashProgress(percent: number, text: string, indeterminate = false) {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    splashWindow.webContents
+      .executeJavaScript(`updateProgress(${percent}, ${JSON.stringify(text)}, ${indeterminate})`)
+      .catch(() => {})
+  }
+}
+
+/**
+ * 关闭 Splash 窗口
+ */
+function closeSplash() {
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    splashWindow.close()
+    splashWindow = null
+  }
 }
 
 /**
@@ -1012,6 +1082,26 @@ function registerIpcHandlers() {
     return { canceled: false, filePath: result.filePaths[0] }
   })
 
+  ipcMain.handle('sns:installBlockDeleteTrigger', async () => {
+    return snsService.installSnsBlockDeleteTrigger()
+  })
+
+  ipcMain.handle('sns:uninstallBlockDeleteTrigger', async () => {
+    return snsService.uninstallSnsBlockDeleteTrigger()
+  })
+
+  ipcMain.handle('sns:checkBlockDeleteTrigger', async () => {
+    return snsService.checkSnsBlockDeleteTrigger()
+  })
+
+  ipcMain.handle('sns:deleteSnsPost', async (_, postId: string) => {
+    return snsService.deleteSnsPost(postId)
+  })
+
+  ipcMain.handle('sns:downloadEmoji', async (_, params: { url: string; encryptUrl?: string; aesKey?: string }) => {
+    return snsService.downloadSnsEmoji(params.url, params.encryptUrl, params.aesKey)
+  })
+
   // 私聊克隆
 
 
@@ -1508,26 +1598,70 @@ function checkForUpdatesOnStartup() {
   }, 3000)
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // 立即创建 Splash 窗口，确保用户尽快看到反馈
+  createSplashWindow()
+
+  // 等待 Splash 页面加载完成后再推送进度
+  if (splashWindow) {
+    await new Promise<void>((resolve) => {
+      if (splashWindow!.webContents.isLoading()) {
+        splashWindow!.webContents.once('did-finish-load', () => resolve())
+      } else {
+        resolve()
+      }
+    })
+    splashWindow.webContents
+      .executeJavaScript(`setVersion(${JSON.stringify(app.getVersion())})`)
+      .catch(() => {})
+  }
+
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  // 初始化配置服务
+  updateSplashProgress(5, '正在加载配置...')
   configService = new ConfigService()
+
+  // 将用户主题配置推送给 Splash 窗口
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    const themeId = configService.get('themeId') || 'cloud-dancer'
+    const themeMode = configService.get('theme') || 'system'
+    splashWindow.webContents
+      .executeJavaScript(`applyTheme(${JSON.stringify(themeId)}, ${JSON.stringify(themeMode)})`)
+      .catch(() => {})
+  }
+  await delay(200)
+
+  // 设置资源路径
+  updateSplashProgress(10, '正在初始化...')
   const candidateResources = app.isPackaged
     ? join(process.resourcesPath, 'resources')
     : join(app.getAppPath(), 'resources')
   const fallbackResources = join(process.cwd(), 'resources')
   const resourcesPath = existsSync(candidateResources) ? candidateResources : fallbackResources
   const userDataPath = app.getPath('userData')
+  await delay(200)
+
+  // 初始化数据库服务
+  updateSplashProgress(18, '正在初始化...')
   wcdbService.setPaths(resourcesPath, userDataPath)
   wcdbService.setLogEnabled(configService.get('logEnabled') === true)
+  await delay(200)
+
+  // 注册 IPC 处理器
+  updateSplashProgress(25, '正在初始化...')
   registerIpcHandlers()
+  await delay(200)
+
+  // 检查配置状态
   const onboardingDone = configService.get('onboardingDone')
   shouldShowMain = onboardingDone === true
-  mainWindow = createWindow({ autoShow: shouldShowMain })
 
-  if (!onboardingDone) {
-    createOnboardingWindow()
-  }
+  // 创建主窗口（不显示，由启动流程统一控制）
+  updateSplashProgress(30, '正在加载界面...')
+  mainWindow = createWindow({ autoShow: false })
 
-  // 解决朋友圈图片无法加载问题（添加 Referer）
+  // 配置网络服务
   session.defaultSession.webRequest.onBeforeSendHeaders(
     {
       urls: ['*://*.qpic.cn/*', '*://*.wx.qq.com/*']
@@ -1538,7 +1672,31 @@ app.whenReady().then(() => {
     }
   )
 
-  // 启动时检测更新
+  // 等待主窗口加载完成（真正耗时阶段，进度条末端呼吸光点）
+  updateSplashProgress(30, '正在加载界面...', true)
+  await new Promise<void>((resolve) => {
+    if (mainWindowReady) {
+      resolve()
+    } else {
+      mainWindow!.once('ready-to-show', () => {
+        mainWindowReady = true
+        resolve()
+      })
+    }
+  })
+
+  // 加载完成，收尾
+  updateSplashProgress(100, '启动完成')
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  closeSplash()
+
+  if (!onboardingDone) {
+    createOnboardingWindow()
+  } else {
+    mainWindow?.show()
+  }
+
+  // 启动时检测更新（不阻塞启动）
   checkForUpdatesOnStartup()
 
   app.on('activate', () => {

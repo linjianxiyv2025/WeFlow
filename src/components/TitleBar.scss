@@ -10,6 +10,12 @@
   gap: 8px;
 }
 
+// 繁花如梦：标题栏毛玻璃
+[data-theme="blossom-dream"] .title-bar {
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
 .title-logo {
   width: 20px;
   height: 20px;

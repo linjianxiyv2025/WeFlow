@@ -2243,6 +2243,18 @@
   .quoted-text {
     color: var(--text-secondary);
     white-space: pre-wrap;
+
+    .quoted-type-label {
+      font-style: italic;
+      opacity: 0.8;
+    }
+
+    .quoted-emoji-image {
+      width: 40px;
+      height: 40px;
+      vertical-align: middle;
+      object-fit: contain;
+    }
   }
 }
 
@@ -2897,7 +2909,6 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
   color: var(--text-secondary);
   font-size: 13px;
 

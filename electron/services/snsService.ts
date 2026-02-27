@@ -6,6 +6,7 @@ import { readFile, writeFile, mkdir } from 'fs/promises'
 import { basename, join } from 'path'
 import crypto from 'crypto'
 import { WasmService } from './wasmService'
+import zlib from 'zlib'
 
 export interface SnsLivePhoto {
     url: string
@@ -28,6 +29,7 @@ export interface SnsMedia {
 
 export interface SnsPost {
     id: string
+    tid?: string       // 数据库主键（雪花 ID），用于精确删除
     username: string
     nickname: string
     avatarUrl?: string
@@ -36,7 +38,7 @@ export interface SnsPost {
     type?: number
     media: SnsMedia[]
     likes: string[]
-    comments: { id: string; nickname: string; content: string; refCommentId: string; refNickname?: string }[]
+    comments: { id: string; nickname: string; content: string; refCommentId: string; refNickname?: string; emojis?: { url: string; md5: string; width: number; height: number; encryptUrl?: string; aesKey?: string }[] }[]
     rawXml?: string
     linkTitle?: string
     linkUrl?: string
@@ -122,6 +124,107 @@ const extractVideoKey = (xml: string): string | undefined => {
     return match ? match[1] : undefined
 }
 
+/**
+ * 从 XML 中解析评论信息（含表情包、回复关系）
+ */
+function parseCommentsFromXml(xml: string): { id: string; nickname: string; content: string; refCommentId: string; refNickname?: string; emojis?: { url: string; md5: string; width: number; height: number; encryptUrl?: string; aesKey?: string }[] }[] {
+    if (!xml) return []
+
+    type CommentItem = {
+        id: string; nickname: string; username?: string; content: string
+        refCommentId: string; refUsername?: string; refNickname?: string
+        emojis?: { url: string; md5: string; width: number; height: number; encryptUrl?: string; aesKey?: string }[]
+    }
+    const comments: CommentItem[] = []
+
+    try {
+        // 支持多种标签格式
+        let listMatch = xml.match(/<CommentUserList>([\s\S]*?)<\/CommentUserList>/i)
+        if (!listMatch) listMatch = xml.match(/<commentUserList>([\s\S]*?)<\/commentUserList>/i)
+        if (!listMatch) listMatch = xml.match(/<commentList>([\s\S]*?)<\/commentList>/i)
+        if (!listMatch) listMatch = xml.match(/<comment_user_list>([\s\S]*?)<\/comment_user_list>/i)
+        if (!listMatch) return comments
+
+        const listXml = listMatch[1]
+        const itemRegex = /<(?:CommentUser|commentUser|comment|user_comment)>([\s\S]*?)<\/(?:CommentUser|commentUser|comment|user_comment)>/gi
+        let m: RegExpExecArray | null
+
+        while ((m = itemRegex.exec(listXml)) !== null) {
+            const c = m[1]
+
+            const idMatch = c.match(/<(?:cmtid|commentId|comment_id|id)>([^<]*)<\/(?:cmtid|commentId|comment_id|id)>/i)
+            const usernameMatch = c.match(/<username>([^<]*)<\/username>/i)
+            let nicknameMatch = c.match(/<nickname>([^<]*)<\/nickname>/i)
+            if (!nicknameMatch) nicknameMatch = c.match(/<nickName>([^<]*)<\/nickName>/i)
+            const contentMatch = c.match(/<content>([^<]*)<\/content>/i)
+            const refIdMatch = c.match(/<(?:refCommentId|replyCommentId|ref_comment_id)>([^<]*)<\/(?:refCommentId|replyCommentId|ref_comment_id)>/i)
+            const refNickMatch = c.match(/<(?:refNickname|refNickName|replyNickname)>([^<]*)<\/(?:refNickname|refNickName|replyNickname)>/i)
+            const refUserMatch = c.match(/<ref_username>([^<]*)<\/ref_username>/i)
+
+            // 解析表情包
+            const emojis: { url: string; md5: string; width: number; height: number; encryptUrl?: string; aesKey?: string }[] = []
+            const emojiRegex = /<emojiinfo>([\s\S]*?)<\/emojiinfo>/gi
+            let em: RegExpExecArray | null
+            while ((em = emojiRegex.exec(c)) !== null) {
+                const ex = em[1]
+                const externUrl = ex.match(/<extern_url>([^<]*)<\/extern_url>/i)
+                const cdnUrl = ex.match(/<cdn_url>([^<]*)<\/cdn_url>/i)
+                const plainUrl = ex.match(/<url>([^<]*)<\/url>/i)
+                const urlMatch = externUrl || cdnUrl || plainUrl
+                const md5Match = ex.match(/<md5>([^<]*)<\/md5>/i)
+                const wMatch = ex.match(/<width>([^<]*)<\/width>/i)
+                const hMatch = ex.match(/<height>([^<]*)<\/height>/i)
+                const encMatch = ex.match(/<encrypt_url>([^<]*)<\/encrypt_url>/i)
+                const aesMatch = ex.match(/<aes_key>([^<]*)<\/aes_key>/i)
+
+                const url = urlMatch ? urlMatch[1].trim().replace(/&amp;/g, '&') : ''
+                const encryptUrl = encMatch ? encMatch[1].trim().replace(/&amp;/g, '&') : undefined
+                const aesKey = aesMatch ? aesMatch[1].trim() : undefined
+
+                if (url || encryptUrl) {
+                    emojis.push({
+                        url,
+                        md5: md5Match ? md5Match[1].trim() : '',
+                        width: wMatch ? parseInt(wMatch[1]) : 0,
+                        height: hMatch ? parseInt(hMatch[1]) : 0,
+                        encryptUrl,
+                        aesKey
+                    })
+                }
+            }
+
+            if (nicknameMatch && (contentMatch || emojis.length > 0)) {
+                const refId = refIdMatch ? refIdMatch[1].trim() : ''
+                comments.push({
+                    id: idMatch ? idMatch[1].trim() : `cmt_${Date.now()}_${Math.random()}`,
+                    nickname: nicknameMatch[1].trim(),
+                    username: usernameMatch ? usernameMatch[1].trim() : undefined,
+                    content: contentMatch ? contentMatch[1].trim() : '',
+                    refCommentId: refId === '0' ? '' : refId,
+                    refUsername: refUserMatch ? refUserMatch[1].trim() : undefined,
+                    refNickname: refNickMatch ? refNickMatch[1].trim() : undefined,
+                    emojis: emojis.length > 0 ? emojis : undefined
+                })
+            }
+        }
+
+        // 二次解析：通过 refUsername 补全 refNickname
+        const userMap = new Map<string, string>()
+        for (const c of comments) {
+            if (c.username && c.nickname) userMap.set(c.username, c.nickname)
+        }
+        for (const c of comments) {
+            if (!c.refNickname && c.refUsername && c.refCommentId) {
+                c.refNickname = userMap.get(c.refUsername)
+            }
+        }
+    } catch (e) {
+        console.error('[SnsService] parseCommentsFromXml 失败:', e)
+    }
+
+    return comments
+}
+
 class SnsService {
     private configService: ConfigService
     private contactCache: ContactCacheService
@@ -130,6 +233,104 @@ class SnsService {
     constructor() {
         this.configService = new ConfigService()
         this.contactCache = new ContactCacheService(this.configService.get('cachePath') as string)
+    }
+
+    private parseLikesFromXml(xml: string): string[] {
+        if (!xml) return []
+        const likes: string[] = []
+        try {
+            let likeListMatch = xml.match(/<LikeUserList>([\s\S]*?)<\/LikeUserList>/i)
+            if (!likeListMatch) likeListMatch = xml.match(/<likeUserList>([\s\S]*?)<\/likeUserList>/i)
+            if (!likeListMatch) likeListMatch = xml.match(/<likeList>([\s\S]*?)<\/likeList>/i)
+            if (!likeListMatch) likeListMatch = xml.match(/<like_user_list>([\s\S]*?)<\/like_user_list>/i)
+            if (!likeListMatch) return likes
+
+            const likeUserRegex = /<(?:LikeUser|likeUser|user_comment)>([\s\S]*?)<\/(?:LikeUser|likeUser|user_comment)>/gi
+            let m: RegExpExecArray | null
+            while ((m = likeUserRegex.exec(likeListMatch[1])) !== null) {
+                let nick = m[1].match(/<nickname>([^<]*)<\/nickname>/i)
+                if (!nick) nick = m[1].match(/<nickName>([^<]*)<\/nickName>/i)
+                if (nick) likes.push(nick[1].trim())
+            }
+        } catch (e) {
+            console.error('[SnsService] 解析点赞失败:', e)
+        }
+        return likes
+    }
+
+    private parseMediaFromXml(xml: string): { media: SnsMedia[]; videoKey?: string } {
+        if (!xml) return { media: [] }
+        const media: SnsMedia[] = []
+        let videoKey: string | undefined
+        try {
+            const encMatch = xml.match(/<enc\s+key="(\d+)"/i)
+            if (encMatch) videoKey = encMatch[1]
+
+            const mediaRegex = /<media>([\s\S]*?)<\/media>/gi
+            let mediaMatch: RegExpExecArray | null
+            while ((mediaMatch = mediaRegex.exec(xml)) !== null) {
+                const mx = mediaMatch[1]
+                const urlMatch = mx.match(/<url[^>]*>([^<]+)<\/url>/i)
+                const urlTagMatch = mx.match(/<url([^>]*)>/i)
+                const thumbMatch = mx.match(/<thumb[^>]*>([^<]+)<\/thumb>/i)
+                const thumbTagMatch = mx.match(/<thumb([^>]*)>/i)
+
+                let urlToken: string | undefined, urlKey: string | undefined
+                let urlMd5: string | undefined, urlEncIdx: string | undefined
+                if (urlTagMatch?.[1]) {
+                    const a = urlTagMatch[1]
+                    urlToken = a.match(/token="([^"]+)"/i)?.[1]
+                    urlKey = a.match(/key="([^"]+)"/i)?.[1]
+                    urlMd5 = a.match(/md5="([^"]+)"/i)?.[1]
+                    urlEncIdx = a.match(/enc_idx="([^"]+)"/i)?.[1]
+                }
+                let thumbToken: string | undefined, thumbKey: string | undefined, thumbEncIdx: string | undefined
+                if (thumbTagMatch?.[1]) {
+                    const a = thumbTagMatch[1]
+                    thumbToken = a.match(/token="([^"]+)"/i)?.[1]
+                    thumbKey = a.match(/key="([^"]+)"/i)?.[1]
+                    thumbEncIdx = a.match(/enc_idx="([^"]+)"/i)?.[1]
+                }
+
+                const item: SnsMedia = {
+                    url: urlMatch ? urlMatch[1].trim() : '',
+                    thumb: thumbMatch ? thumbMatch[1].trim() : '',
+                    token: urlToken || thumbToken,
+                    key: urlKey || thumbKey,
+                    md5: urlMd5,
+                    encIdx: urlEncIdx || thumbEncIdx
+                }
+
+                const livePhotoMatch = mx.match(/<livePhoto>([\s\S]*?)<\/livePhoto>/i)
+                if (livePhotoMatch) {
+                    const lx = livePhotoMatch[1]
+                    const lpUrl = lx.match(/<url[^>]*>([^<]+)<\/url>/i)
+                    const lpUrlTag = lx.match(/<url([^>]*)>/i)
+                    const lpThumb = lx.match(/<thumb[^>]*>([^<]+)<\/thumb>/i)
+                    const lpThumbTag = lx.match(/<thumb([^>]*)>/i)
+                    let lpToken: string | undefined, lpKey: string | undefined, lpEncIdx: string | undefined
+                    if (lpUrlTag?.[1]) {
+                        const a = lpUrlTag[1]
+                        lpToken = a.match(/token="([^"]+)"/i)?.[1]
+                        lpKey = a.match(/key="([^"]+)"/i)?.[1]
+                        lpEncIdx = a.match(/enc_idx="([^"]+)"/i)?.[1]
+                    }
+                    if (!lpToken && lpThumbTag?.[1]) lpToken = lpThumbTag[1].match(/token="([^"]+)"/i)?.[1]
+                    if (!lpKey && lpThumbTag?.[1]) lpKey = lpThumbTag[1].match(/key="([^"]+)"/i)?.[1]
+                    item.livePhoto = {
+                        url: lpUrl ? lpUrl[1].trim() : '',
+                        thumb: lpThumb ? lpThumb[1].trim() : '',
+                        token: lpToken,
+                        key: lpKey,
+                        encIdx: lpEncIdx
+                    }
+                }
+                media.push(item)
+            }
+        } catch (e) {
+            console.error('[SnsService] 解析媒体 XML 失败:', e)
+        }
+        return { media, videoKey }
     }
 
     private getSnsCacheDir(): string {
@@ -147,7 +348,6 @@ class SnsService {
         return join(this.getSnsCacheDir(), `${hash}${ext}`)
     }
 
-    // 获取所有发过朋友圈的用户名列表
     async getSnsUsernames(): Promise<{ success: boolean; usernames?: string[]; error?: string }> {
         const result = await wcdbService.execQuery('sns', null, 'SELECT DISTINCT user_name FROM SnsTimeLine')
         if (!result.success || !result.rows) {
@@ -159,51 +359,142 @@ class SnsService {
         return { success: true, usernames: result.rows.map((r: any) => r.user_name).filter(Boolean) }
     }
 
-    async getTimeline(limit: number = 20, offset: number = 0, usernames?: string[], keyword?: string, startTime?: number, endTime?: number): Promise<{ success: boolean; timeline?: SnsPost[]; error?: string }> {
-        const result = await wcdbService.getSnsTimeline(limit, offset, usernames, keyword, startTime, endTime)
+    // 安装朋友圈删除拦截
+    async installSnsBlockDeleteTrigger(): Promise<{ success: boolean; alreadyInstalled?: boolean; error?: string }> {
+        return wcdbService.installSnsBlockDeleteTrigger()
+    }
 
-        if (result.success && result.timeline) {
-            const enrichedTimeline = result.timeline.map((post: any) => {
-                const contact = this.contactCache.get(post.username)
-                const isVideoPost = post.type === 15
+    // 卸载朋友圈删除拦截
+    async uninstallSnsBlockDeleteTrigger(): Promise<{ success: boolean; error?: string }> {
+        return wcdbService.uninstallSnsBlockDeleteTrigger()
+    }
 
-                // 尝试从 rawXml 中提取视频解密密钥 (针对视频号视频)
-                const videoKey = extractVideoKey(post.rawXml || '')
+    // 查询朋友圈删除拦截是否已安装
+    async checkSnsBlockDeleteTrigger(): Promise<{ success: boolean; installed?: boolean; error?: string }> {
+        return wcdbService.checkSnsBlockDeleteTrigger()
+    }
 
-                const fixedMedia = (post.media || []).map((m: any) => ({
-                    // 如果是视频动态，url 是视频，thumb 是缩略图
-                    url: fixSnsUrl(m.url, m.token, isVideoPost),
-                    thumb: fixSnsUrl(m.thumb, m.token, false),
-                    md5: m.md5,
-                    token: m.token,
-                    // 只有在视频动态 (Type 15) 下才尝试将 XML 提取的 videoKey 赋予主媒体
-                    // 对于图片或实况照片的静态部分，应保留原始 m.key (由 DLL/DB 提供)，避免由于错误的 Isaac64 密钥导致图片解密损坏
-                    key: isVideoPost ? (videoKey || m.key) : m.key,
-                    encIdx: m.encIdx || m.enc_idx,
-                    livePhoto: m.livePhoto
-                        ? {
-                            ...m.livePhoto,
-                            url: fixSnsUrl(m.livePhoto.url, m.livePhoto.token, true),
-                            thumb: fixSnsUrl(m.livePhoto.thumb, m.livePhoto.token, false),
-                            token: m.livePhoto.token,
-                            // 实况照片的视频部分优先使用从 XML 提取的 Key
-                            key: videoKey || m.livePhoto.key || m.key,
-                            encIdx: m.livePhoto.encIdx || m.livePhoto.enc_idx
-                        }
-                        : undefined
+    // 从数据库直接删除朋友圈记录
+    async deleteSnsPost(postId: string): Promise<{ success: boolean; error?: string }> {
+        return wcdbService.deleteSnsPost(postId)
+    }
+
+    /**
+     * 补全 DLL 返回的评论中缺失的 refNickname
+     * DLL 返回的 refCommentId 是被回复评论的 cmtid
+     * 评论按 cmtid 从小到大排列，cmtid 从 1 开始递增
+     */
+    private fixCommentRefs(comments: any[]): any[] {
+        if (!comments || comments.length === 0) return []
+
+        // DLL 现在返回完整的评论数据（含 emojis、refNickname）
+        // 此处做最终的格式化和兜底补全
+        const idToNickname = new Map<string, string>()
+        comments.forEach((c, idx) => {
+            if (c.id) idToNickname.set(c.id, c.nickname || '')
+            // 兜底：按索引映射（部分旧数据 id 可能为空）
+            idToNickname.set(String(idx + 1), c.nickname || '')
+        })
+
+        return comments.map((c) => {
+            const refId = c.refCommentId
+            let refNickname = c.refNickname || ''
+
+            if (refId && refId !== '0' && refId !== '' && !refNickname) {
+                refNickname = idToNickname.get(refId) || ''
+            }
+
+            // 处理 emojis：过滤掉空的 url 和 encryptUrl
+            const emojis = (c.emojis || [])
+                .filter((e: any) => e.url || e.encryptUrl)
+                .map((e: any) => ({
+                    url: (e.url || '').replace(/&amp;/g, '&'),
+                    md5: e.md5 || '',
+                    width: e.width || 0,
+                    height: e.height || 0,
+                    encryptUrl: e.encryptUrl ? e.encryptUrl.replace(/&amp;/g, '&') : undefined,
+                    aesKey: e.aesKey || undefined
                 }))
 
-                return {
-                    ...post,
-                    avatarUrl: contact?.avatarUrl,
-                    nickname: post.nickname || contact?.displayName || post.username,
-                    media: fixedMedia
-                }
-            })
-            return { ...result, timeline: enrichedTimeline }
+            return {
+                id: c.id || '',
+                nickname: c.nickname || '',
+                content: c.content || '',
+                refCommentId: (refId === '0') ? '' : (refId || ''),
+                refNickname,
+                emojis: emojis.length > 0 ? emojis : undefined
+            }
+        })
+    }
+
+    async getTimeline(limit: number = 20, offset: number = 0, usernames?: string[], keyword?: string, startTime?: number, endTime?: number): Promise<{ success: boolean; timeline?: SnsPost[]; error?: string }> {
+        const result = await wcdbService.getSnsTimeline(limit, offset, usernames, keyword, startTime, endTime)
+        if (!result.success || !result.timeline || result.timeline.length === 0) return result
+
+        // 诊断：测试 execQuery 查 content 字段
+        try {
+            const testResult = await wcdbService.execQuery('sns', null, 'SELECT tid, CAST(content AS TEXT) as ct, typeof(content) as ctype FROM SnsTimeLine ORDER BY tid DESC LIMIT 1')
+            if (testResult.success && testResult.rows?.[0]) {
+                const r = testResult.rows[0]
+                console.log('[SnsService] execQuery 诊断: ctype=', r.ctype, 'ct长度=', r.ct?.length, 'ct前200=', r.ct?.substring(0, 200))
+                console.log('[SnsService] ct包含CommentUserList:', r.ct?.includes('CommentUserList'))
+            } else {
+                console.log('[SnsService] execQuery 诊断失败:', testResult.error)
+            }
+        } catch (e) {
+            console.log('[SnsService] execQuery 诊断异常:', e)
         }
 
-        return result
+        const enrichedTimeline = result.timeline.map((post: any) => {
+            const contact = this.contactCache.get(post.username)
+            const isVideoPost = post.type === 15
+            const videoKey = extractVideoKey(post.rawXml || '')
+
+            const fixedMedia = (post.media || []).map((m: any) => ({
+                url: fixSnsUrl(m.url, m.token, isVideoPost),
+                thumb: fixSnsUrl(m.thumb, m.token, false),
+                md5: m.md5,
+                token: m.token,
+                key: isVideoPost ? (videoKey || m.key) : m.key,
+                encIdx: m.encIdx || m.enc_idx,
+                livePhoto: m.livePhoto ? {
+                    ...m.livePhoto,
+                    url: fixSnsUrl(m.livePhoto.url, m.livePhoto.token, true),
+                    thumb: fixSnsUrl(m.livePhoto.thumb, m.livePhoto.token, false),
+                    token: m.livePhoto.token,
+                    key: videoKey || m.livePhoto.key || m.key,
+                    encIdx: m.livePhoto.encIdx || m.livePhoto.enc_idx
+                } : undefined
+            }))
+
+            // DLL 已返回完整评论数据（含 emojis、refNickname）
+            // 如果 DLL 评论缺少表情包信息，回退到从 rawXml 重新解析
+            const dllComments: any[] = post.comments || []
+            const hasEmojisInDll = dllComments.some((c: any) => c.emojis && c.emojis.length > 0)
+            const rawXml = post.rawXml || ''
+
+            let finalComments: any[]
+            if (dllComments.length > 0 && (hasEmojisInDll || !rawXml)) {
+                // DLL 数据完整，直接使用
+                finalComments = this.fixCommentRefs(dllComments)
+            } else if (rawXml) {
+                // 回退：从 rawXml 重新解析（兼容旧版 DLL）
+                const xmlComments = parseCommentsFromXml(rawXml)
+                finalComments = xmlComments.length > 0 ? xmlComments : this.fixCommentRefs(dllComments)
+            } else {
+                finalComments = this.fixCommentRefs(dllComments)
+            }
+
+            return {
+                ...post,
+                avatarUrl: contact?.avatarUrl,
+                nickname: post.nickname || contact?.displayName || post.username,
+                media: fixedMedia,
+                comments: finalComments
+            }
+        })
+
+        return { ...result, timeline: enrichedTimeline }
     }
 
     async debugResource(url: string): Promise<{ success: boolean; status?: number; headers?: any; error?: string }> {
@@ -856,6 +1147,316 @@ window.addEventListener('scroll',function(){document.getElementById('btt').class
                 resolve({ success: false, error: e.message })
             }
         })
+    }
+
+    /** 判断 buffer 是否为有效图片头 */
+    private isValidImageBuffer(buf: Buffer): boolean {
+        if (!buf || buf.length < 12) return false
+        if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return true
+        if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return true
+        if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return true
+        if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
+            && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return true
+        return false
+    }
+
+    /** 根据图片头返回扩展名 */
+    private getImageExtFromBuffer(buf: Buffer): string {
+        if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return '.gif'
+        if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return '.png'
+        if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return '.jpg'
+        if (buf.length >= 12 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
+            && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return '.webp'
+        return '.gif'
+    }
+
+    /** 构建多种密钥派生方式 */
+    private buildKeyTries(aesKey: string): { name: string; key: Buffer }[] {
+        const keyTries: { name: string; key: Buffer }[] = []
+        const hexStr = aesKey.replace(/\s/g, '')
+        if (hexStr.length >= 32 && /^[0-9a-fA-F]+$/.test(hexStr)) {
+            try {
+                const keyBuf = Buffer.from(hexStr.slice(0, 32), 'hex')
+                if (keyBuf.length === 16) keyTries.push({ name: 'hex-decode', key: keyBuf })
+            } catch { }
+            const rawKey = Buffer.from(hexStr.slice(0, 32), 'utf8')
+            if (rawKey.length === 32) keyTries.push({ name: 'raw-hex-str-32', key: rawKey })
+        }
+        if (aesKey.length >= 16) {
+            keyTries.push({ name: 'utf8-16', key: Buffer.from(aesKey, 'utf8').subarray(0, 16) })
+        }
+        keyTries.push({ name: 'md5', key: crypto.createHash('md5').update(aesKey).digest() })
+        try {
+            const b64Buf = Buffer.from(aesKey, 'base64')
+            if (b64Buf.length >= 16) keyTries.push({ name: 'base64', key: b64Buf.subarray(0, 16) })
+        } catch { }
+        return keyTries
+    }
+
+    /** 构建多种 GCM 数据布局 */
+    private buildGcmLayouts(encData: Buffer): { nonce: Buffer; ciphertext: Buffer; tag: Buffer }[] {
+        const layouts: { nonce: Buffer; ciphertext: Buffer; tag: Buffer }[] = []
+        // 格式 A：GcmData 块格式
+        if (encData.length > 63 && encData[0] === 0xAB && encData[8] === 0xAB && encData[9] === 0x00) {
+            const payloadSize = encData.readUInt32LE(10)
+            if (payloadSize > 16 && 63 + payloadSize <= encData.length) {
+                const nonce = encData.subarray(19, 31)
+                const payload = encData.subarray(63, 63 + payloadSize)
+                layouts.push({ nonce, ciphertext: payload.subarray(0, payload.length - 16), tag: payload.subarray(payload.length - 16) })
+            }
+        }
+        // 格式 B：尾部 [ciphertext][nonce 12B][tag 16B]
+        if (encData.length > 28) {
+            layouts.push({
+                ciphertext: encData.subarray(0, encData.length - 28),
+                nonce: encData.subarray(encData.length - 28, encData.length - 16),
+                tag: encData.subarray(encData.length - 16)
+            })
+        }
+        // 格式 C：前置 [nonce 12B][ciphertext][tag 16B]
+        if (encData.length > 28) {
+            layouts.push({
+                nonce: encData.subarray(0, 12),
+                ciphertext: encData.subarray(12, encData.length - 16),
+                tag: encData.subarray(encData.length - 16)
+            })
+        }
+        // 格式 D：零 nonce
+        if (encData.length > 16) {
+            layouts.push({
+                nonce: Buffer.alloc(12, 0),
+                ciphertext: encData.subarray(0, encData.length - 16),
+                tag: encData.subarray(encData.length - 16)
+            })
+        }
+        // 格式 E：[nonce 12B][tag 16B][ciphertext]
+        if (encData.length > 28) {
+            layouts.push({
+                nonce: encData.subarray(0, 12),
+                tag: encData.subarray(12, 28),
+                ciphertext: encData.subarray(28)
+            })
+        }
+        return layouts
+    }
+
+    /** 尝试 AES-GCM 解密 */
+    private tryGcmDecrypt(key: Buffer, nonce: Buffer, ciphertext: Buffer, tag: Buffer): Buffer | null {
+        try {
+            const algo = key.length === 32 ? 'aes-256-gcm' : 'aes-128-gcm'
+            const decipher = crypto.createDecipheriv(algo, key, nonce)
+            decipher.setAuthTag(tag)
+            const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+            if (this.isValidImageBuffer(decrypted)) return decrypted
+            for (const fn of [zlib.inflateSync, zlib.gunzipSync, zlib.unzipSync]) {
+                try {
+                    const d = fn(decrypted)
+                    if (this.isValidImageBuffer(d)) return d
+                } catch { }
+            }
+            return decrypted
+        } catch {
+            return null
+        }
+    }
+
+    /**
+     * 解密表情数据（多种算法 + 多种密钥派生）
+     * 移植自 ciphertalk 的逆向实现
+     */
+    private decryptEmojiAes(encData: Buffer, aesKey: string): Buffer | null {
+        if (encData.length <= 16) return null
+
+        const keyTries = this.buildKeyTries(aesKey)
+        const tag = encData.subarray(encData.length - 16)
+        const ciphertext = encData.subarray(0, encData.length - 16)
+
+        // 最高优先级：nonce-tail 格式 [ciphertext][nonce 12B][tag 16B]
+        if (encData.length > 28) {
+            const nonceTail = encData.subarray(encData.length - 28, encData.length - 16)
+            const tagTail = encData.subarray(encData.length - 16)
+            const cipherTail = encData.subarray(0, encData.length - 28)
+            for (const { key } of keyTries) {
+                if (key.length !== 16 && key.length !== 32) continue
+                const result = this.tryGcmDecrypt(key, nonceTail, cipherTail, tagTail)
+                if (result) return result
+            }
+        }
+
+        // 次优先级：nonce = key 前 12 字节
+        for (const { key } of keyTries) {
+            if (key.length !== 16 && key.length !== 32) continue
+            const nonce = key.subarray(0, 12)
+            const result = this.tryGcmDecrypt(key, nonce, ciphertext, tag)
+            if (result) return result
+        }
+
+        // 其他 GCM 布局
+        const layouts = this.buildGcmLayouts(encData)
+        for (const layout of layouts) {
+            for (const { key } of keyTries) {
+                if (key.length !== 16 && key.length !== 32) continue
+                const result = this.tryGcmDecrypt(key, layout.nonce, layout.ciphertext, layout.tag)
+                if (result) return result
+            }
+        }
+
+        // 回退：AES-128-CBC / AES-128-ECB
+        for (const { key } of keyTries) {
+            if (key.length !== 16) continue
+            // CBC：IV = key
+            if (encData.length >= 16 && encData.length % 16 === 0) {
+                try {
+                    const dec = crypto.createDecipheriv('aes-128-cbc', key, key)
+                    dec.setAutoPadding(true)
+                    const result = Buffer.concat([dec.update(encData), dec.final()])
+                    if (this.isValidImageBuffer(result)) return result
+                    for (const fn of [zlib.inflateSync, zlib.gunzipSync]) {
+                        try { const d = fn(result); if (this.isValidImageBuffer(d)) return d } catch { }
+                    }
+                } catch { }
+            }
+            // CBC：前 16 字节作为 IV
+            if (encData.length > 32) {
+                try {
+                    const iv = encData.subarray(0, 16)
+                    const dec = crypto.createDecipheriv('aes-128-cbc', key, iv)
+                    dec.setAutoPadding(true)
+                    const result = Buffer.concat([dec.update(encData.subarray(16)), dec.final()])
+                    if (this.isValidImageBuffer(result)) return result
+                } catch { }
+            }
+            // ECB
+            try {
+                const dec = crypto.createDecipheriv('aes-128-ecb', key, null)
+                dec.setAutoPadding(true)
+                const result = Buffer.concat([dec.update(encData), dec.final()])
+                if (this.isValidImageBuffer(result)) return result
+            } catch { }
+        }
+
+        return null
+    }
+
+    /** 下载原始数据到本地临时文件，支持重定向 */
+    private doDownloadRaw(targetUrl: string, cacheKey: string, cacheDir: string): Promise<string | null> {
+        return new Promise((resolve) => {
+            try {
+                const fs = require('fs')
+                const https = require('https')
+                const http = require('http')
+                let fixedUrl = targetUrl.replace(/&amp;/g, '&')
+                const urlObj = new URL(fixedUrl)
+                const protocol = fixedUrl.startsWith('https') ? https : http
+
+                const options = {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 MicroMessenger/7.0.20.1781(0x67001431)',
+                        'Accept': '*/*',
+                        'Connection': 'keep-alive'
+                    },
+                    rejectUnauthorized: false,
+                    timeout: 15000
+                }
+
+                const request = protocol.get(fixedUrl, options, (response: any) => {
+                    // 处理重定向
+                    if ([301, 302, 303, 307].includes(response.statusCode)) {
+                        const redirectUrl = response.headers.location
+                        if (redirectUrl) {
+                            const full = redirectUrl.startsWith('http') ? redirectUrl : `${urlObj.protocol}//${urlObj.host}${redirectUrl}`
+                            this.doDownloadRaw(full, cacheKey, cacheDir).then(resolve)
+                            return
+                        }
+                    }
+                    if (response.statusCode !== 200) { resolve(null); return }
+
+                    const chunks: Buffer[] = []
+                    response.on('data', (chunk: Buffer) => chunks.push(chunk))
+                    response.on('end', () => {
+                        const buffer = Buffer.concat(chunks)
+                        if (buffer.length === 0) { resolve(null); return }
+                        const ext = this.isValidImageBuffer(buffer) ? this.getImageExtFromBuffer(buffer) : '.bin'
+                        const filePath = join(cacheDir, `${cacheKey}${ext}`)
+                        try {
+                            fs.writeFileSync(filePath, buffer)
+                            resolve(filePath)
+                        } catch { resolve(null) }
+                    })
+                    response.on('error', () => resolve(null))
+                })
+                request.on('error', () => resolve(null))
+                request.setTimeout(15000, () => { request.destroy(); resolve(null) })
+            } catch { resolve(null) }
+        })
+    }
+
+    /**
+     * 下载朋友圈评论中的表情包（多种解密算法，移植自 ciphertalk）
+     */
+    async downloadSnsEmoji(url: string, encryptUrl?: string, aesKey?: string): Promise<{ success: boolean; localPath?: string; error?: string }> {
+        if (!url && !encryptUrl) return { success: false, error: 'url 不能为空' }
+
+        const fs = require('fs')
+        const cacheKey = crypto.createHash('md5').update(url || encryptUrl!).digest('hex')
+        const cachePath = this.configService.getCacheBasePath()
+        const emojiDir = join(cachePath, 'sns_emoji_cache')
+        if (!existsSync(emojiDir)) mkdirSync(emojiDir, { recursive: true })
+
+        // 检查本地缓存
+        for (const ext of ['.gif', '.png', '.webp', '.jpg', '.jpeg']) {
+            const filePath = join(emojiDir, `${cacheKey}${ext}`)
+            if (existsSync(filePath)) return { success: true, localPath: filePath }
+        }
+
+        // 保存解密后的图片
+        const saveDecrypted = (buf: Buffer): { success: boolean; localPath?: string } => {
+            const ext = this.isValidImageBuffer(buf) ? this.getImageExtFromBuffer(buf) : '.gif'
+            const filePath = join(emojiDir, `${cacheKey}${ext}`)
+            try { fs.writeFileSync(filePath, buf); return { success: true, localPath: filePath } }
+            catch { return { success: false } }
+        }
+
+        // 1. 优先：encryptUrl + aesKey
+        if (encryptUrl && aesKey) {
+            const encResult = await this.doDownloadRaw(encryptUrl, cacheKey + '_enc', emojiDir)
+            if (encResult) {
+                const encData = fs.readFileSync(encResult)
+                if (this.isValidImageBuffer(encData)) {
+                    const ext = this.getImageExtFromBuffer(encData)
+                    const filePath = join(emojiDir, `${cacheKey}${ext}`)
+                    fs.writeFileSync(filePath, encData)
+                    try { fs.unlinkSync(encResult) } catch { }
+                    return { success: true, localPath: filePath }
+                }
+                const decrypted = this.decryptEmojiAes(encData, aesKey)
+                if (decrypted) {
+                    try { fs.unlinkSync(encResult) } catch { }
+                    return saveDecrypted(decrypted)
+                }
+                try { fs.unlinkSync(encResult) } catch { }
+            }
+        }
+
+        // 2. 直接下载 url
+        if (url) {
+            const result = await this.doDownloadRaw(url, cacheKey, emojiDir)
+            if (result) {
+                const buf = fs.readFileSync(result)
+                if (this.isValidImageBuffer(buf)) return { success: true, localPath: result }
+                // 用 aesKey 解密
+                if (aesKey) {
+                    const decrypted = this.decryptEmojiAes(buf, aesKey)
+                    if (decrypted) {
+                        try { fs.unlinkSync(result) } catch { }
+                        return saveDecrypted(decrypted)
+                    }
+                }
+                try { fs.unlinkSync(result) } catch { }
+            }
+        }
+
+        return { success: false, error: '下载表情包失败' }
     }
 }
 

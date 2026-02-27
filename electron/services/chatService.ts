@@ -991,9 +991,31 @@ class ChatService {
       }
 
       console.warn(`[ChatService] 表情包数据库未命中: md5=${msg.emojiMd5}, db=${dbPath}`)
+      // 数据库未命中时，尝试从本地 emoji 缓存目录查找（转发的表情包只有 md5，无 CDN URL）
+      this.findEmojiInLocalCache(msg)
 
     } catch (e) {
       console.error(`[ChatService] 恢复表情包失败: md5=${msg.emojiMd5}`, e)
+    }
+  }
+
+  /**
+   * 从本地 WeFlow emoji 缓存目录按 md5 查找文件
+   */
+  private findEmojiInLocalCache(msg: Message): void {
+    if (!msg.emojiMd5) return
+    const cacheDir = this.getEmojiCacheDir()
+    if (!existsSync(cacheDir)) return
+
+    const extensions = ['.gif', '.png', '.webp', '.jpg', '.jpeg']
+    for (const ext of extensions) {
+      const filePath = join(cacheDir, `${msg.emojiMd5}${ext}`)
+      if (existsSync(filePath)) {
+        msg.emojiLocalPath = filePath
+        // 同步写入内存缓存，避免重复查找
+        emojiCache.set(msg.emojiMd5, filePath)
+        return
+      }
     }
   }
 
@@ -1338,6 +1360,9 @@ class ChatService {
         chatRecordList = type49Info.chatRecordList
         transferPayerUsername = type49Info.transferPayerUsername
         transferReceiverUsername = type49Info.transferReceiverUsername
+        // 引用消息（appmsg type=57）的 quotedContent/quotedSender
+        if (type49Info.quotedContent !== undefined) quotedContent = type49Info.quotedContent
+        if (type49Info.quotedSender !== undefined) quotedSender = type49Info.quotedSender
       } else if (localType === 244813135921 || (content && content.includes('<type>57</type>'))) {
         const quoteInfo = this.parseQuoteMessage(content)
         quotedContent = quoteInfo.content
@@ -1381,6 +1406,8 @@ class ChatService {
         chatRecordList = chatRecordList || type49Info.chatRecordList
         transferPayerUsername = transferPayerUsername || type49Info.transferPayerUsername
         transferReceiverUsername = transferReceiverUsername || type49Info.transferReceiverUsername
+        if (!quotedContent && type49Info.quotedContent !== undefined) quotedContent = type49Info.quotedContent
+        if (!quotedSender && type49Info.quotedSender !== undefined) quotedSender = type49Info.quotedSender
       }
 
       messages.push({
@@ -1549,7 +1576,17 @@ class ChatService {
 
   private parseType49(content: string): string {
     const title = this.extractXmlValue(content, 'title')
-    const type = this.extractXmlValue(content, 'type')
+    // 从 appmsg 直接子节点提取 type，避免匹配到 refermsg 内部的 <type>
+    let type = ''
+    const appmsgMatch = /<appmsg[\s\S]*?>([\s\S]*?)<\/appmsg>/i.exec(content)
+    if (appmsgMatch) {
+      const inner = appmsgMatch[1]
+        .replace(/<refermsg[\s\S]*?<\/refermsg>/gi, '')
+        .replace(/<patMsg[\s\S]*?<\/patMsg>/gi, '')
+      const typeMatch = /<type>([\s\S]*?)<\/type>/i.exec(inner)
+      if (typeMatch) type = typeMatch[1].trim()
+    }
+    if (!type) type = this.extractXmlValue(content, 'type')
     const normalized = content.toLowerCase()
     const locationLabel =
       this.extractXmlAttribute(content, 'location', 'label') ||
@@ -1964,6 +2001,8 @@ class ChatService {
    */
   private parseType49Message(content: string): {
     xmlType?: string
+    quotedContent?: string
+    quotedSender?: string
     linkTitle?: string
     linkUrl?: string
     linkThumb?: string
@@ -2008,8 +2047,20 @@ class ChatService {
     try {
       if (!content) return {}
 
-      // 提取 appmsg 中的 type
-      const xmlType = this.extractXmlValue(content, 'type')
+      // 提取 appmsg 直接子节点的 type，避免匹配到 refermsg 内部的 <type>
+      // 先尝试从 <appmsg>...</appmsg> 块内提取，再用正则跳过嵌套标签
+      let xmlType = ''
+      const appmsgMatch = /<appmsg[\s\S]*?>([\s\S]*?)<\/appmsg>/i.exec(content)
+      if (appmsgMatch) {
+        // 在 appmsg 内容中，找第一个 <type> 但跳过在子元素内部的（如 refermsg > type）
+        // 策略：去掉所有嵌套块（refermsg、patMsg 等），再提取 type
+        const appmsgInner = appmsgMatch[1]
+          .replace(/<refermsg[\s\S]*?<\/refermsg>/gi, '')
+          .replace(/<patMsg[\s\S]*?<\/patMsg>/gi, '')
+        const typeMatch = /<type>([\s\S]*?)<\/type>/i.exec(appmsgInner)
+        if (typeMatch) xmlType = typeMatch[1].trim()
+      }
+      if (!xmlType) xmlType = this.extractXmlValue(content, 'type')
       if (!xmlType) return {}
 
       const result: any = { xmlType }
@@ -2126,6 +2177,12 @@ class ChatService {
         result.appMsgKind = 'transfer'
       } else if (xmlType === '87') {
         result.appMsgKind = 'announcement'
+      } else if (xmlType === '57') {
+        // 引用回复消息，解析 refermsg
+        result.appMsgKind = 'quote'
+        const quoteInfo = this.parseQuoteMessage(content)
+        result.quotedContent = quoteInfo.content
+        result.quotedSender = quoteInfo.sender
       } else if ((xmlType === '5' || xmlType === '49') && (sourceUsername?.startsWith('gh_') || appName?.includes('公众号') || sourceName)) {
         result.appMsgKind = 'official-link'
       } else if (url) {

@@ -500,7 +500,7 @@ export interface ElectronAPI {
           }
         }>
         likes: Array<string>
-        comments: Array<{ id: string; nickname: string; content: string; refCommentId: string; refNickname?: string }>
+        comments: Array<{ id: string; nickname: string; content: string; refCommentId: string; refNickname?: string; emojis?: Array<{ url: string; md5: string; width: number; height: number; encryptUrl?: string; aesKey?: string }> }>
         rawXml?: string
       }>
       error?: string
@@ -520,6 +520,11 @@ export interface ElectronAPI {
     onExportProgress: (callback: (payload: { current: number; total: number; status: string }) => void) => () => void
     selectExportDir: () => Promise<{ canceled: boolean; filePath?: string }>
     getSnsUsernames: () => Promise<{ success: boolean; usernames?: string[]; error?: string }>
+    installBlockDeleteTrigger: () => Promise<{ success: boolean; alreadyInstalled?: boolean; error?: string }>
+    uninstallBlockDeleteTrigger: () => Promise<{ success: boolean; error?: string }>
+    checkBlockDeleteTrigger: () => Promise<{ success: boolean; installed?: boolean; error?: string }>
+    deleteSnsPost: (postId: string) => Promise<{ success: boolean; error?: string }>
+    downloadEmoji: (params: { url: string; encryptUrl?: string; aesKey?: string }) => Promise<{ success: boolean; localPath?: string; error?: string }>
   }
   http: {
     start: (port?: number) => Promise<{ success: boolean; port?: number; error?: string }>

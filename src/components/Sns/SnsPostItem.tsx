@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from 'react'
-import { Heart, ChevronRight, ImageIcon, Download, Code, MoreHorizontal, Trash2 } from 'lucide-react'
+import React, { useState, useMemo, useEffect } from 'react'
+import { createPortal } from 'react-dom'
+import { Heart, ChevronRight, ImageIcon, Code, Trash2 } from 'lucide-react'
 import { SnsPost, SnsLinkCardData } from '../../types/sns'
 import { Avatar } from '../Avatar'
 import { SnsMediaGrid } from './SnsMediaGrid'
@@ -178,14 +179,78 @@ const SnsLinkCard = ({ card }: { card: SnsLinkCardData }) => {
     )
 }
 
+// 表情包内存缓存
+const emojiLocalCache = new Map<string, string>()
+
+// 评论表情包组件
+const CommentEmoji: React.FC<{
+    emoji: { url: string; md5: string; width: number; height: number; encryptUrl?: string; aesKey?: string }
+    onPreview?: (src: string) => void
+}> = ({ emoji, onPreview }) => {
+    const cacheKey = emoji.encryptUrl || emoji.url
+    const [localSrc, setLocalSrc] = useState<string>(() => emojiLocalCache.get(cacheKey) || '')
+
+    useEffect(() => {
+        if (!cacheKey) return
+        if (emojiLocalCache.has(cacheKey)) {
+            setLocalSrc(emojiLocalCache.get(cacheKey)!)
+            return
+        }
+        let cancelled = false
+        const load = async () => {
+            try {
+                const res = await window.electronAPI.sns.downloadEmoji({
+                    url: emoji.url,
+                    encryptUrl: emoji.encryptUrl,
+                    aesKey: emoji.aesKey
+                })
+                if (cancelled) return
+                if (res.success && res.localPath) {
+                    const fileUrl = res.localPath.startsWith('file:')
+                        ? res.localPath
+                        : `file://${res.localPath.replace(/\\/g, '/')}`
+                    emojiLocalCache.set(cacheKey, fileUrl)
+                    setLocalSrc(fileUrl)
+                }
+            } catch { /* 静默失败 */ }
+        }
+        load()
+        return () => { cancelled = true }
+    }, [cacheKey])
+
+    if (!localSrc) return null
+
+    return (
+        <img
+            src={localSrc}
+            alt="emoji"
+            className="comment-custom-emoji"
+            draggable={false}
+            onClick={(e) => { e.stopPropagation(); onPreview?.(localSrc) }}
+            style={{
+                width: Math.min(emoji.width || 24, 30),
+                height: Math.min(emoji.height || 24, 30),
+                verticalAlign: 'middle',
+                marginLeft: 2,
+                borderRadius: 4,
+                cursor: onPreview ? 'pointer' : 'default'
+            }}
+        />
+    )
+}
+
 interface SnsPostItemProps {
     post: SnsPost
     onPreview: (src: string, isVideo?: boolean, liveVideoPath?: string) => void
     onDebug: (post: SnsPost) => void
+    onDelete?: (postId: string) => void
 }
 
-export const SnsPostItem: React.FC<SnsPostItemProps> = ({ post, onPreview, onDebug }) => {
+export const SnsPostItem: React.FC<SnsPostItemProps> = ({ post, onPreview, onDebug, onDelete }) => {
     const [mediaDeleted, setMediaDeleted] = useState(false)
+    const [dbDeleted, setDbDeleted] = useState(false)
+    const [deleting, setDeleting] = useState(false)
+    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
     const linkCard = buildLinkCardData(post)
     const hasVideoMedia = post.type === 15 || post.media.some((item) => isSnsVideoUrl(item.url))
     const showLinkCard = Boolean(linkCard) && post.media.length <= 1 && !hasVideoMedia
@@ -221,8 +286,29 @@ export const SnsPostItem: React.FC<SnsPostItemProps> = ({ post, onPreview, onDeb
         })
     }
 
+    const handleDeleteClick = (e: React.MouseEvent) => {
+        e.stopPropagation()
+        if (deleting || dbDeleted) return
+        setShowDeleteConfirm(true)
+    }
+
+    const handleDeleteConfirm = async () => {
+        setShowDeleteConfirm(false)
+        setDeleting(true)
+        try {
+            const r = await window.electronAPI.sns.deleteSnsPost(post.tid ?? post.id)
+            if (r.success) {
+                setDbDeleted(true)
+                onDelete?.(post.id)
+            }
+        } finally {
+            setDeleting(false)
+        }
+    }
+
     return (
-        <div className={`sns-post-item ${mediaDeleted ? 'post-deleted' : ''}`}>
+        <>
+        <div className={`sns-post-item ${(mediaDeleted || dbDeleted) ? 'post-deleted' : ''}`}>
             <div className="post-avatar-col">
                 <Avatar
                     src={post.avatarUrl}
@@ -239,12 +325,20 @@ export const SnsPostItem: React.FC<SnsPostItemProps> = ({ post, onPreview, onDeb
                         <span className="post-time">{formatTime(post.createTime)}</span>
                     </div>
                     <div className="post-header-actions">
-                        {mediaDeleted && (
+                        {(mediaDeleted || dbDeleted) && (
                             <span className="post-deleted-badge">
                                 <Trash2 size={12} />
                                 <span>已删除</span>
                             </span>
                         )}
+                        <button
+                            className="icon-btn-ghost debug-btn delete-btn"
+                            onClick={handleDeleteClick}
+                            disabled={deleting || dbDeleted}
+                            title="从数据库删除此条记录"
+                        >
+                            <Trash2 size={14} />
+                        </button>
                         <button className="icon-btn-ghost debug-btn" onClick={(e) => {
                             e.stopPropagation();
                             onDebug(post);
@@ -289,7 +383,16 @@ export const SnsPostItem: React.FC<SnsPostItemProps> = ({ post, onPreview, onDeb
                                             </>
                                         )}
                                         <span className="comment-colon">：</span>
-                                        <span className="comment-content">{renderTextWithEmoji(c.content)}</span>
+                                        {c.content && (
+                                            <span className="comment-content">{renderTextWithEmoji(c.content)}</span>
+                                        )}
+                                        {c.emojis && c.emojis.map((emoji, ei) => (
+                                            <CommentEmoji
+                                                key={ei}
+                                                emoji={emoji}
+                                                onPreview={(src) => onPreview(src)}
+                                            />
+                                        ))}
                                     </div>
                                 ))}
                             </div>
@@ -298,5 +401,24 @@ export const SnsPostItem: React.FC<SnsPostItemProps> = ({ post, onPreview, onDeb
                 )}
             </div>
         </div>
+
+        {/* 删除确认弹窗 - 用 Portal 挂到 body，避免父级 transform 影响 fixed 定位 */}
+        {showDeleteConfirm && createPortal(
+            <div className="sns-confirm-overlay" onClick={() => setShowDeleteConfirm(false)}>
+                <div className="sns-confirm-dialog" onClick={(e) => e.stopPropagation()}>
+                    <div className="sns-confirm-icon">
+                        <Trash2 size={22} />
+                    </div>
+                    <div className="sns-confirm-title">删除这条记录？</div>
+                    <div className="sns-confirm-desc">将从本地数据库中永久删除，无法恢复。</div>
+                    <div className="sns-confirm-actions">
+                        <button className="sns-confirm-cancel" onClick={() => setShowDeleteConfirm(false)}>取消</button>
+                        <button className="sns-confirm-ok" onClick={handleDeleteConfirm}>删除</button>
+                    </div>
+                </div>
+            </div>,
+            document.body
+        )}
+        </>
     )
 }

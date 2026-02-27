@@ -843,7 +843,7 @@ export class KeyService {
   private findTemplateDatFiles(rootDir: string): string[] {
     const files: string[] = []
     const stack = [rootDir]
-    const maxFiles = 32
+    const maxFiles = 256
     while (stack.length && files.length < maxFiles) {
       const dir = stack.pop() as string
       let entries: string[]
@@ -877,7 +877,7 @@ export class KeyService {
       if (ma && mb) return mb.localeCompare(ma)
       return 0
     })
-    return files.slice(0, 16)
+    return files.slice(0, 128)
   }
 
   private getXorKey(templateFiles: string[]): number | null {

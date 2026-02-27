@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useRef, useCallback } from 'react'
-import { RefreshCw, Search, X, Download, FolderOpen, FileJson, FileText, Image, CheckCircle, AlertCircle, Calendar, Users, Info, ChevronLeft, ChevronRight } from 'lucide-react'
+import { RefreshCw, Search, X, Download, FolderOpen, FileJson, FileText, Image, CheckCircle, AlertCircle, Calendar, Users, Info, ChevronLeft, ChevronRight, Shield, ShieldOff } from 'lucide-react'
 import JumpToDateDialog from '../components/JumpToDateDialog'
 import './SnsPage.scss'
 import { SnsPost } from '../types/sns'
@@ -46,6 +46,12 @@ export default function SnsPage() {
     const [calendarPicker, setCalendarPicker] = useState<{ field: 'start' | 'end'; month: Date } | null>(null)
     const [showYearMonthPicker, setShowYearMonthPicker] = useState(false)
 
+    // 触发器相关状态
+    const [showTriggerDialog, setShowTriggerDialog] = useState(false)
+    const [triggerInstalled, setTriggerInstalled] = useState<boolean | null>(null)
+    const [triggerLoading, setTriggerLoading] = useState(false)
+    const [triggerMessage, setTriggerMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
     const postsContainerRef = useRef<HTMLDivElement>(null)
     const [hasNewer, setHasNewer] = useState(false)
     const [loadingNewer, setLoadingNewer] = useState(false)
@@ -56,7 +62,6 @@ export default function SnsPage() {
     useEffect(() => {
         postsRef.current = posts
     }, [posts])
-
     // 在 DOM 更新后、浏览器绘制前同步调整滚动位置，防止向上加载时页面跳动
     useLayoutEffect(() => {
         const snapshot = scrollAdjustmentRef.current;
@@ -286,6 +291,25 @@ export default function SnsPage() {
                         <h2>朋友圈</h2>
                         <div className="header-actions">
                             <button
+                                onClick={async () => {
+                                    setTriggerMessage(null)
+                                    setShowTriggerDialog(true)
+                                    setTriggerLoading(true)
+                                    try {
+                                        const r = await window.electronAPI.sns.checkBlockDeleteTrigger()
+                                        setTriggerInstalled(r.success ? (r.installed ?? false) : false)
+                                    } catch {
+                                        setTriggerInstalled(false)
+                                    } finally {
+                                        setTriggerLoading(false)
+                                    }
+                                }}
+                                className="icon-btn"
+                                title="朋友圈保护插件"
+                            >
+                                <Shield size={20} />
+                            </button>
+                            <button
                                 onClick={() => {
                                     setExportResult(null)
                                     setExportProgress(null)
@@ -329,7 +353,7 @@ export default function SnsPage() {
                         {posts.map(post => (
                             <SnsPostItem
                                 key={post.id}
-                                post={post}
+                                post={{ ...post, isProtected: triggerInstalled === true }}
                                 onPreview={(src, isVideo, liveVideoPath) => {
                                     if (isVideo) {
                                         void window.electronAPI.window.openVideoPlayerWindow(src)
@@ -338,6 +362,7 @@ export default function SnsPage() {
                                     }
                                 }}
                                 onDebug={(p) => setDebugPost(p)}
+                                onDelete={(postId) => setPosts(prev => prev.filter(p => p.id !== postId))}
                             />
                         ))}
                     </div>
@@ -421,6 +446,101 @@ export default function SnsPage() {
                             <pre className="json-code">
                                 {JSON.stringify(debugPost, null, 2)}
                             </pre>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* 朋友圈防删除插件对话框 */}
+            {showTriggerDialog && (
+                <div className="modal-overlay" onClick={() => { setShowTriggerDialog(false); setTriggerMessage(null) }}>
+                    <div className="sns-protect-dialog" onClick={(e) => e.stopPropagation()}>
+                        <button className="close-btn sns-protect-close" onClick={() => { setShowTriggerDialog(false); setTriggerMessage(null) }}>
+                            <X size={18} />
+                        </button>
+
+                        {/* 顶部图标区 */}
+                        <div className="sns-protect-hero">
+                            <div className={`sns-protect-icon-wrap ${triggerInstalled ? 'active' : ''}`}>
+                                {triggerLoading
+                                    ? <RefreshCw size={28} className="spinning" />
+                                    : triggerInstalled
+                                        ? <Shield size={28} />
+                                        : <ShieldOff size={28} />
+                                }
+                            </div>
+                            <div className="sns-protect-title">朋友圈防删除</div>
+                            <div className={`sns-protect-status-badge ${triggerInstalled ? 'on' : 'off'}`}>
+                                {triggerLoading ? '检查中…' : triggerInstalled ? '已启用' : '未启用'}
+                            </div>
+                        </div>
+
+                        {/* 说明 */}
+                        <div className="sns-protect-desc">
+                            启用后，WeFlow将拦截朋友圈删除操作<br/>已同步的动态不会从本地数据库中消失<br/>新的动态仍可正常同步。
+                        </div>
+
+                        {/* 操作反馈 */}
+                        {triggerMessage && (
+                            <div className={`sns-protect-feedback ${triggerMessage.type}`}>
+                                {triggerMessage.type === 'success' ? <CheckCircle size={14} /> : <AlertCircle size={14} />}
+                                <span>{triggerMessage.text}</span>
+                            </div>
+                        )}
+
+                        {/* 操作按钮 */}
+                        <div className="sns-protect-actions">
+                            {!triggerInstalled ? (
+                                <button
+                                    className="sns-protect-btn primary"
+                                    disabled={triggerLoading}
+                                    onClick={async () => {
+                                        setTriggerLoading(true)
+                                        setTriggerMessage(null)
+                                        try {
+                                            const r = await window.electronAPI.sns.installBlockDeleteTrigger()
+                                            if (r.success) {
+                                                setTriggerInstalled(true)
+                                                setTriggerMessage({ type: 'success', text: r.alreadyInstalled ? '插件已存在，无需重复安装' : '已启用朋友圈防删除保护' })
+                                            } else {
+                                                setTriggerMessage({ type: 'error', text: r.error || '安装失败' })
+                                            }
+                                        } catch (e: any) {
+                                            setTriggerMessage({ type: 'error', text: e.message || String(e) })
+                                        } finally {
+                                            setTriggerLoading(false)
+                                        }
+                                    }}
+                                >
+                                    <Shield size={15} />
+                                    启用保护
+                                </button>
+                            ) : (
+                                <button
+                                    className="sns-protect-btn danger"
+                                    disabled={triggerLoading}
+                                    onClick={async () => {
+                                        setTriggerLoading(true)
+                                        setTriggerMessage(null)
+                                        try {
+                                            const r = await window.electronAPI.sns.uninstallBlockDeleteTrigger()
+                                            if (r.success) {
+                                                setTriggerInstalled(false)
+                                                setTriggerMessage({ type: 'success', text: '已关闭朋友圈防删除保护' })
+                                            } else {
+                                                setTriggerMessage({ type: 'error', text: r.error || '卸载失败' })
+                                            }
+                                        } catch (e: any) {
+                                            setTriggerMessage({ type: 'error', text: e.message || String(e) })
+                                        } finally {
+                                            setTriggerLoading(false)
+                                        }
+                                    }}
+                                >
+                                    <ShieldOff size={15} />
+                                    关闭保护
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>

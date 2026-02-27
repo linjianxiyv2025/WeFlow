@@ -76,17 +76,13 @@ class AnalyticsService {
     const map: Record<string, string> = {}
     if (usernames.length === 0) return map
 
+    // C++ 层不支持参数绑定，直接内联转义后的字符串值
     const chunkSize = 200
     for (let i = 0; i < usernames.length; i += chunkSize) {
       const chunk = usernames.slice(i, i + chunkSize)
-      // 使用参数化查询防止SQL注入
-      const placeholders = chunk.map(() => '?').join(',')
-      const sql = `
-        SELECT username, alias
-        FROM contact
-        WHERE username IN (${placeholders})
-      `
-      const result = await wcdbService.execQuery('contact', null, sql, chunk)
+      const inList = chunk.map((u) => `'${this.escapeSqlValue(u)}'`).join(',')
+      const sql = `SELECT username, alias FROM contact WHERE username IN (${inList})`
+      const result = await wcdbService.execQuery('contact', null, sql)
       if (!result.success || !result.rows) continue
       for (const row of result.rows as Record<string, any>[]) {
         const username = row.username || ''

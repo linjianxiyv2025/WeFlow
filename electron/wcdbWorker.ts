@@ -144,6 +144,18 @@ if (parentPort) {
                 case 'getSnsAnnualStats':
                     result = await core.getSnsAnnualStats(payload.beginTimestamp, payload.endTimestamp)
                     break
+                case 'installSnsBlockDeleteTrigger':
+                    result = await core.installSnsBlockDeleteTrigger()
+                    break
+                case 'uninstallSnsBlockDeleteTrigger':
+                    result = await core.uninstallSnsBlockDeleteTrigger()
+                    break
+                case 'checkSnsBlockDeleteTrigger':
+                    result = await core.checkSnsBlockDeleteTrigger()
+                    break
+                case 'deleteSnsPost':
+                    result = await core.deleteSnsPost(payload.postId)
+                    break
                 case 'getLogs':
                     result = await core.getLogs()
                     break

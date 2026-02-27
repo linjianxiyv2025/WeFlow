@@ -2780,6 +2780,31 @@ const voiceTranscriptCache = new Map<string, string>()
 const senderAvatarCache = new Map<string, { avatarUrl?: string; displayName?: string }>()
 const senderAvatarLoading = new Map<string, Promise<{ avatarUrl?: string; displayName?: string } | null>>()
 
+// 引用消息中的动画表情组件
+function QuotedEmoji({ cdnUrl, md5 }: { cdnUrl: string; md5?: string }) {
+  const cacheKey = md5 || cdnUrl
+  const [localPath, setLocalPath] = useState<string | undefined>(() => emojiDataUrlCache.get(cacheKey))
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    if (localPath || loading || error) return
+    setLoading(true)
+    window.electronAPI.chat.downloadEmoji(cdnUrl, md5).then((result: { success: boolean; localPath?: string }) => {
+      if (result.success && result.localPath) {
+        emojiDataUrlCache.set(cacheKey, result.localPath)
+        setLocalPath(result.localPath)
+      } else {
+        setError(true)
+      }
+    }).catch(() => setError(true)).finally(() => setLoading(false))
+  }, [cdnUrl, md5, cacheKey, localPath, loading, error])
+
+  if (error || (!loading && !localPath)) return <span className="quoted-type-label">[动画表情]</span>
+  if (loading) return <span className="quoted-type-label">[动画表情]</span>
+  return <img src={localPath} alt="动画表情" className="quoted-emoji-image" />
+}
+
 // 消息气泡组件
 function MessageBubble({
   message,
@@ -2901,7 +2926,7 @@ function MessageBubble({
   // 从缓存获取表情包 data URL
   const cacheKey = message.emojiMd5 || message.emojiCdnUrl || ''
   const [emojiLocalPath, setEmojiLocalPath] = useState<string | undefined>(
-    () => emojiDataUrlCache.get(cacheKey)
+    () => emojiDataUrlCache.get(cacheKey) || message.emojiLocalPath
   )
   const imageCacheKey = message.imageMd5 || message.imageDatName || `local:${message.localId}`
   const [imageLocalPath, setImageLocalPath] = useState<string | undefined>(
@@ -3036,10 +3061,15 @@ function MessageBubble({
   // 自动下载表情包
   useEffect(() => {
     if (emojiLocalPath) return
+    // 后端已从本地缓存找到文件（转发表情包无 CDN URL 的情况）
+    if (isEmoji && message.emojiLocalPath && !emojiLocalPath) {
+      setEmojiLocalPath(message.emojiLocalPath)
+      return
+    }
     if (isEmoji && message.emojiCdnUrl && !emojiLoading && !emojiError) {
       downloadEmoji()
     }
-  }, [isEmoji, message.emojiCdnUrl, emojiLocalPath, emojiLoading, emojiError])
+  }, [isEmoji, message.emojiCdnUrl, message.emojiLocalPath, emojiLocalPath, emojiLoading, emojiError])
 
   const requestImageDecrypt = useCallback(async (forceUpdate = false, silent = false) => {
     if (!isImage) return
@@ -3971,11 +4001,13 @@ function MessageBubble({
     // 通话消息
     if (isCall) {
       return (
-        <div className="call-message">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
-          </svg>
-          <span>{message.parsedContent || '[通话]'}</span>
+        <div className="bubble-content">
+          <div className="call-message">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
+            </svg>
+            <span>{message.parsedContent || '[通话]'}</span>
+          </div>
         </div>
       )
     }
@@ -4043,11 +4075,39 @@ function MessageBubble({
         const replyText = q('title') || cleanMessageContent(message.parsedContent) || ''
         const referContent = q('refermsg > content') || ''
         const referSender = q('refermsg > displayname') || ''
+        const referType = q('refermsg > type') || ''
+
+        // 根据被引用消息类型渲染对应内容
+        const renderReferContent = () => {
+          // 动画表情：解析嵌套 XML 提取 cdnurl 渲染
+          if (referType === '47') {
+            try {
+              const innerDoc = new DOMParser().parseFromString(referContent, 'text/xml')
+              const cdnUrl = innerDoc.querySelector('emoji')?.getAttribute('cdnurl') || ''
+              const md5 = innerDoc.querySelector('emoji')?.getAttribute('md5') || ''
+              if (cdnUrl) return <QuotedEmoji cdnUrl={cdnUrl} md5={md5} />
+            } catch { /* 解析失败降级 */ }
+            return <span className="quoted-type-label">[动画表情]</span>
+          }
+
+          // 各类型名称映射
+          const typeLabels: Record<string, string> = {
+            '3': '图片', '34': '语音', '43': '视频',
+            '49': '链接', '50': '通话', '10000': '系统消息', '10002': '撤回消息',
+          }
+          if (referType && typeLabels[referType]) {
+            return <span className="quoted-type-label">[{typeLabels[referType]}]</span>
+          }
+
+          // 普通文本或未知类型
+          return <>{renderTextWithEmoji(cleanMessageContent(referContent))}</>
+        }
+
         return (
           <div className="bubble-content">
             <div className="quoted-message">
               {referSender && <span className="quoted-sender">{referSender}</span>}
-              <span className="quoted-text">{renderTextWithEmoji(cleanMessageContent(referContent))}</span>
+              <span className="quoted-text">{renderReferContent()}</span>
             </div>
             <div className="message-text">{renderTextWithEmoji(cleanMessageContent(replyText))}</div>
           </div>
@@ -4142,6 +4202,22 @@ function MessageBubble({
           </div>
         </div>
       )
+
+      if (kind === 'quote') {
+        // 引用回复消息（appMsgKind='quote'，xmlType=57）
+        const replyText = message.linkTitle || q('title') || cleanMessageContent(message.parsedContent) || ''
+        const referContent = message.quotedContent || q('refermsg > content') || ''
+        const referSender = message.quotedSender || q('refermsg > displayname') || ''
+        return (
+          <div className="bubble-content">
+            <div className="quoted-message">
+              {referSender && <span className="quoted-sender">{referSender}</span>}
+              <span className="quoted-text">{renderTextWithEmoji(cleanMessageContent(referContent))}</span>
+            </div>
+            <div className="message-text">{renderTextWithEmoji(cleanMessageContent(replyText))}</div>
+          </div>
+        )
+      }
 
       if (kind === 'red-packet') {
         // 专属红包卡片
@@ -4345,6 +4421,44 @@ function MessageBubble({
         textAnnouncement = parsedDoc.querySelector('textannouncement')?.textContent || ''
       } catch (e) {
         console.error('解析 AppMsg 失败:', e)
+      }
+
+      // 引用回复消息 (type=57)，防止被误判为链接
+      if (appMsgType === '57') {
+        const replyText = parsedDoc?.querySelector('title')?.textContent?.trim() || cleanMessageContent(message.parsedContent) || ''
+        const referContent = parsedDoc?.querySelector('refermsg > content')?.textContent?.trim() || ''
+        const referSender = parsedDoc?.querySelector('refermsg > displayname')?.textContent?.trim() || ''
+        const referType = parsedDoc?.querySelector('refermsg > type')?.textContent?.trim() || ''
+
+        const renderReferContent2 = () => {
+          if (referType === '47') {
+            try {
+              const innerDoc = new DOMParser().parseFromString(referContent, 'text/xml')
+              const cdnUrl = innerDoc.querySelector('emoji')?.getAttribute('cdnurl') || ''
+              const md5 = innerDoc.querySelector('emoji')?.getAttribute('md5') || ''
+              if (cdnUrl) return <QuotedEmoji cdnUrl={cdnUrl} md5={md5} />
+            } catch { /* 解析失败降级 */ }
+            return <span className="quoted-type-label">[动画表情]</span>
+          }
+          const typeLabels: Record<string, string> = {
+            '3': '图片', '34': '语音', '43': '视频',
+            '49': '链接', '50': '通话', '10000': '系统消息', '10002': '撤回消息',
+          }
+          if (referType && typeLabels[referType]) {
+            return <span className="quoted-type-label">[{typeLabels[referType]}]</span>
+          }
+          return <>{renderTextWithEmoji(cleanMessageContent(referContent))}</>
+        }
+
+        return (
+          <div className="bubble-content">
+            <div className="quoted-message">
+              {referSender && <span className="quoted-sender">{referSender}</span>}
+              <span className="quoted-text">{renderReferContent2()}</span>
+            </div>
+            <div className="message-text">{renderTextWithEmoji(cleanMessageContent(replyText))}</div>
+          </div>
+        )
       }
 
       // 群公告消息 (type=87)
@@ -4579,7 +4693,7 @@ function MessageBubble({
     if (isEmoji) {
       // ... (keep existing emoji logic)
       // 没有 cdnUrl 或加载失败，显示占位符
-      if (!message.emojiCdnUrl || emojiError) {
+      if ((!message.emojiCdnUrl && !message.emojiLocalPath) || emojiError) {
         return (
           <div className="emoji-unavailable">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">

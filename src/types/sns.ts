@@ -16,16 +16,27 @@ export interface SnsMedia {
     livePhoto?: SnsLivePhoto
 }
 
+export interface SnsCommentEmoji {
+    url: string
+    md5: string
+    width: number
+    height: number
+    encryptUrl?: string
+    aesKey?: string
+}
+
 export interface SnsComment {
     id: string
     nickname: string
     content: string
     refCommentId: string
     refNickname?: string
+    emojis?: SnsCommentEmoji[]
 }
 
 export interface SnsPost {
     id: string
+    tid?: string       // 数据库主键（雪花 ID），用于精确删除
     username: string
     nickname: string
     avatarUrl?: string
@@ -38,6 +49,7 @@ export interface SnsPost {
     rawXml?: string
     linkTitle?: string
     linkUrl?: string
+    isProtected?: boolean  // 是否受保护（已安装时标记）
 }
 
 export interface SnsLinkCardData {

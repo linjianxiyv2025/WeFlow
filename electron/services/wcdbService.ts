@@ -417,6 +417,34 @@ export class WcdbService {
   }
 
   /**
+   * 安装朋友圈删除拦截
+   */
+  async installSnsBlockDeleteTrigger(): Promise<{ success: boolean; alreadyInstalled?: boolean; error?: string }> {
+    return this.callWorker('installSnsBlockDeleteTrigger')
+  }
+
+  /**
+   * 卸载朋友圈删除拦截
+   */
+  async uninstallSnsBlockDeleteTrigger(): Promise<{ success: boolean; error?: string }> {
+    return this.callWorker('uninstallSnsBlockDeleteTrigger')
+  }
+
+  /**
+   * 查询朋友圈删除拦截是否已安装
+   */
+  async checkSnsBlockDeleteTrigger(): Promise<{ success: boolean; installed?: boolean; error?: string }> {
+    return this.callWorker('checkSnsBlockDeleteTrigger')
+  }
+
+  /**
+   * 从数据库直接删除朋友圈记录
+   */
+  async deleteSnsPost(postId: string): Promise<{ success: boolean; error?: string }> {
+    return this.callWorker('deleteSnsPost', { postId })
+  }
+
+  /**
    * 获取 DLL 内部日志
    */
   async getLogs(): Promise<{ success: boolean; logs?: string[]; error?: string }> {
