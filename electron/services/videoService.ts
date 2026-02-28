@@ -291,6 +291,7 @@ class VideoService {
 
             const attrMatch = /\smd5\s*=\s*['"]([a-fA-F0-9]+)['"]/i.exec(content)
             if (attrMatch) {
+                console.log('[VideoService] Found MD5 via attribute:', attrMatch[1])
                 return attrMatch[1].toLowerCase()
             }
 
