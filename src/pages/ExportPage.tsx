@@ -467,6 +467,43 @@ function ExportPage() {
     return scopeKey
   }, [])
 
+  const loadContactsCachesWithScopeFallback = useCallback(async (primaryScopeKey: string) => {
+    const [myWxid, dbPath] = await Promise.all([
+      configService.getMyWxid(),
+      configService.getDbPath()
+    ])
+    const candidates = Array.from(new Set([
+      primaryScopeKey,
+      dbPath || '',
+      myWxid || '',
+      dbPath && myWxid ? `${dbPath}::${myWxid}` : '',
+      dbPath ? `${dbPath}::` : '',
+      myWxid ? `::${myWxid}` : '',
+      'default'
+    ].filter(Boolean)))
+
+    for (const candidate of candidates) {
+      const [contactsItem, avatarItem] = await Promise.all([
+        configService.getContactsListCache(candidate),
+        configService.getContactsAvatarCache(candidate)
+      ])
+      const hasContacts = Boolean(contactsItem?.contacts?.length)
+      const hasAvatars = Boolean(avatarItem && Object.keys(avatarItem.avatars || {}).length > 0)
+      if (!hasContacts && !hasAvatars) continue
+      return {
+        resolvedScopeKey: candidate,
+        contactsItem,
+        avatarItem
+      }
+    }
+
+    return {
+      resolvedScopeKey: primaryScopeKey,
+      contactsItem: null as configService.ContactsListCacheItem | null,
+      avatarItem: null as configService.ContactsAvatarCacheItem | null
+    }
+  }, [])
+
   useEffect(() => {
     tasksRef.current = tasks
   }, [tasks])
@@ -612,10 +649,11 @@ function ExportPage() {
       const scopeKey = await ensureExportCacheScope()
       if (isStale()) return
 
-      const [cachedContactsItem, cachedAvatarItem] = await Promise.all([
-        configService.getContactsListCache(scopeKey),
-        configService.getContactsAvatarCache(scopeKey)
-      ])
+      const {
+        resolvedScopeKey,
+        contactsItem: cachedContactsItem,
+        avatarItem: cachedAvatarItem
+      } = await loadContactsCachesWithScopeFallback(scopeKey)
       if (isStale()) return
 
       const cachedContacts = cachedContactsItem?.contacts || []
@@ -629,6 +667,17 @@ function ExportPage() {
       }
       setSessionContactsUpdatedAt(cachedContactsItem?.updatedAt || null)
       setSessionAvatarUpdatedAt(cachedAvatarItem?.updatedAt || null)
+
+      if (resolvedScopeKey !== scopeKey && cachedContacts.length > 0) {
+        void configService.setContactsListCache(scopeKey, cachedContacts).catch((error) => {
+          console.error('回填主 scope 通讯录缓存失败:', error)
+        })
+      }
+      if (resolvedScopeKey !== scopeKey && Object.keys(cachedAvatarEntries).length > 0) {
+        void configService.setContactsAvatarCache(scopeKey, cachedAvatarEntries).catch((error) => {
+          console.error('回填主 scope 头像缓存失败:', error)
+        })
+      }
 
       const connectResult = await window.electronAPI.chat.connect()
       if (!connectResult.success) {
@@ -795,7 +844,7 @@ function ExportPage() {
     } finally {
       if (!isStale()) setIsLoading(false)
     }
-  }, [ensureExportCacheScope, syncContactTypeCounts])
+  }, [ensureExportCacheScope, loadContactsCachesWithScopeFallback, syncContactTypeCounts])
 
   useEffect(() => {
     if (!isExportRoute) return
@@ -1373,7 +1422,10 @@ function ExportPage() {
         </div>
         <div className="session-meta">
           <div className="session-name">{session.displayName || session.username}</div>
-          <div className="session-id">{session.wechatId || session.username}</div>
+          <div className="session-id">
+            {session.wechatId || session.username}
+            {!session.hasSession ? ' · 暂无会话记录' : ''}
+          </div>
         </div>
       </div>
     )
