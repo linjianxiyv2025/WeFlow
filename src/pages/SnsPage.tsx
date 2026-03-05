@@ -10,16 +10,12 @@ import * as configService from '../services/config'
 const SNS_PAGE_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const SNS_PAGE_CACHE_POST_LIMIT = 200
 const SNS_PAGE_CACHE_SCOPE_FALLBACK = '__default__'
-const CONTACTS_PRUNE_BATCH_SIZE = 40
-const CONTACTS_PRUNE_INTERVAL_MS = 80
 
 interface Contact {
     username: string
     displayName: string
     avatarUrl?: string
     type?: 'friend' | 'former_friend' | 'sns_only'
-    postCount?: number
-    postCountStatus: 'loading' | 'ready' | 'error'
 }
 
 interface SnsOverviewStats {
@@ -93,7 +89,6 @@ export default function SnsPage() {
     const cacheScopeKeyRef = useRef('')
     const scrollAdjustmentRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null)
     const contactsLoadTokenRef = useRef(0)
-    const contactsPruneTimerRef = useRef<number | null>(null)
 
     // Sync posts ref
     useEffect(() => {
@@ -114,14 +109,6 @@ export default function SnsPage() {
     useEffect(() => {
         jumpTargetDateRef.current = jumpTargetDate
     }, [jumpTargetDate])
-    useEffect(() => {
-        return () => {
-            if (contactsPruneTimerRef.current !== null) {
-                window.clearTimeout(contactsPruneTimerRef.current)
-                contactsPruneTimerRef.current = null
-            }
-        }
-    }, [])
     // 在 DOM 更新后、浏览器绘制前同步调整滚动位置，防止向上加载时页面跳动
     useLayoutEffect(() => {
         const snapshot = scrollAdjustmentRef.current;
@@ -403,12 +390,8 @@ export default function SnsPage() {
         }
     }, [jumpTargetDate, persistSnsPageCache, searchKeyword, selectedUsernames])
 
-    // Load Contacts（先展示全量好友/曾经好友，再按朋友圈条数逐步剔除 0 条联系人）
+    // Load Contacts（仅加载好友/曾经好友，不再统计朋友圈条数）
     const loadContacts = useCallback(async () => {
-        if (contactsPruneTimerRef.current !== null) {
-            window.clearTimeout(contactsPruneTimerRef.current)
-            contactsPruneTimerRef.current = null
-        }
         const requestToken = ++contactsLoadTokenRef.current
         setContactsLoading(true)
         try {
@@ -422,8 +405,7 @@ export default function SnsPage() {
                             username: c.username,
                             displayName: c.displayName,
                             avatarUrl: c.avatarUrl,
-                            type: c.type === 'former_friend' ? 'former_friend' : 'friend',
-                            postCountStatus: 'loading'
+                            type: c.type === 'former_friend' ? 'former_friend' : 'friend'
                         })
                     }
                 }
@@ -453,62 +435,9 @@ export default function SnsPage() {
                     setContacts(contactsList)
                 }
             }
-
-            const snsCountsResult = await window.electronAPI.sns.getUserPostCounts()
-            if (requestToken !== contactsLoadTokenRef.current) return
-
-            if (snsCountsResult.success && snsCountsResult.data) {
-                const snsPostCountMap = new Map<string, number>(
-                    Object.entries(snsCountsResult.data).map(([username, count]) => [username, Math.max(0, Number(count || 0))])
-                )
-                const contactsWithCounts: Contact[] = contactsList.map(contact => ({
-                    ...contact,
-                    postCount: snsPostCountMap.get(contact.username) ?? 0,
-                    postCountStatus: 'ready' as const
-                }))
-                setContacts(contactsWithCounts)
-
-                const zeroCountUsernames = contactsWithCounts
-                    .filter(contact => (contact.postCount || 0) <= 0)
-                    .map(contact => contact.username)
-
-                if (zeroCountUsernames.length > 0) {
-                    let cursor = 0
-                    const pruneNextBatch = () => {
-                        if (requestToken !== contactsLoadTokenRef.current) {
-                            contactsPruneTimerRef.current = null
-                            return
-                        }
-                        const batch = zeroCountUsernames.slice(cursor, cursor + CONTACTS_PRUNE_BATCH_SIZE)
-                        if (batch.length === 0) {
-                            contactsPruneTimerRef.current = null
-                            return
-                        }
-                        const batchSet = new Set(batch)
-                        setContacts(prev => prev.filter(contact => !batchSet.has(contact.username)))
-                        cursor += CONTACTS_PRUNE_BATCH_SIZE
-                        if (cursor < zeroCountUsernames.length) {
-                            contactsPruneTimerRef.current = window.setTimeout(pruneNextBatch, CONTACTS_PRUNE_INTERVAL_MS)
-                        } else {
-                            contactsPruneTimerRef.current = null
-                        }
-                    }
-                    contactsPruneTimerRef.current = window.setTimeout(pruneNextBatch, CONTACTS_PRUNE_INTERVAL_MS)
-                }
-            } else {
-                console.error('Failed to load SNS contact post counts:', snsCountsResult.error)
-                setContacts(prev => prev.map(contact => ({
-                    ...contact,
-                    postCountStatus: 'error'
-                })))
-            }
         } catch (error) {
             if (requestToken !== contactsLoadTokenRef.current) return
             console.error('Failed to load contacts:', error)
-            setContacts(prev => prev.map(contact => ({
-                ...contact,
-                postCountStatus: 'error'
-            })))
         } finally {
             if (requestToken === contactsLoadTokenRef.current) {
                 setContactsLoading(false)

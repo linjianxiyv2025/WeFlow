@@ -1260,10 +1260,6 @@ function registerIpcHandlers() {
     return snsService.getSnsUsernames()
   })
 
-  ipcMain.handle('sns:getUserPostCounts', async () => {
-    return snsService.getUserPostCounts()
-  })
-
   ipcMain.handle('sns:getExportStats', async () => {
     return snsService.getExportStats()
   })

@@ -1083,11 +1083,6 @@
                             color: var(--primary);
                             font-weight: 600;
                         }
-
-                        .contact-post-count {
-                            color: var(--primary);
-                            opacity: 0.9;
-                        }
                     }
 
                     /* If the NEXT item is also selected */
@@ -1123,20 +1118,6 @@
                         white-space: nowrap;
                         overflow: hidden;
                         text-overflow: ellipsis;
-                    }
-
-                    .contact-post-count {
-                        font-size: 12px;
-                        color: var(--text-tertiary);
-                        line-height: 1.2;
-
-                        &.is-loading {
-                            font-style: italic;
-                        }
-
-                        &.is-error {
-                            color: var(--color-error, #f44336);
-                        }
                     }
                 }
             }

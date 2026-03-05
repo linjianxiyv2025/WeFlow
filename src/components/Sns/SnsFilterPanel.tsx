@@ -7,8 +7,6 @@ interface Contact {
     username: string
     displayName: string
     avatarUrl?: string
-    postCount?: number
-    postCountStatus?: 'loading' | 'ready' | 'error'
 }
 
 interface SnsFilterPanelProps {
@@ -59,22 +57,12 @@ export const SnsFilterPanel: React.FC<SnsFilterPanelProps> = ({
         setJumpTargetDate(undefined)
     }
 
-    const getPostCountDisplay = (contact: Contact) => {
-        if (contact.postCountStatus === 'error') {
-            return { text: '统计失败', className: 'is-error' }
-        }
-        if (contact.postCountStatus !== 'ready') {
-            return { text: '统计中', className: 'is-loading' }
-        }
-        return { text: `${Math.max(0, Number(contact.postCount || 0))} 条`, className: '' }
-    }
-
     const getEmptyStateText = () => {
         if (loading && contacts.length === 0) {
             return '正在加载联系人...'
         }
         if (contacts.length === 0) {
-            return '有朋友圈数据的好友或者曾经的好友数量为 0'
+            return '暂无好友或曾经的好友'
         }
         return '没有找到联系人'
     }
@@ -166,7 +154,6 @@ export const SnsFilterPanel: React.FC<SnsFilterPanelProps> = ({
 
                     <div className="contact-list-scroll">
                         {filteredContacts.map(contact => {
-                            const countDisplay = getPostCountDisplay(contact)
                             return (
                             <div
                                 key={contact.username}
@@ -176,7 +163,6 @@ export const SnsFilterPanel: React.FC<SnsFilterPanelProps> = ({
                                 <Avatar src={contact.avatarUrl} name={contact.displayName} size={36} shape="rounded" />
                                 <div className="contact-meta">
                                     <span className="contact-name">{contact.displayName}</span>
-                                    <span className={`contact-post-count ${countDisplay.className}`}>{countDisplay.text}</span>
                                 </div>
                             </div>
                             )
