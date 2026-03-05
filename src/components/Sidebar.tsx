@@ -49,6 +49,17 @@ const writeSidebarUserProfileCache = (profile: SidebarUserProfile): void => {
   }
 }
 
+const normalizeAccountId = (value?: string | null): string => {
+  const trimmed = String(value || '').trim()
+  if (!trimmed) return ''
+  if (trimmed.toLowerCase().startsWith('wxid_')) {
+    const match = trimmed.match(/^(wxid_[^_]+)/i)
+    return match?.[1] || trimmed
+  }
+  const suffixMatch = trimmed.match(/^(.+)_([a-zA-Z0-9]{4})$/)
+  return suffixMatch ? suffixMatch[1] : trimmed
+}
+
 function Sidebar() {
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(false)
@@ -105,10 +116,11 @@ function Sidebar() {
 
       try {
         const wxid = await configService.getMyWxid()
-        const resolvedWxid = wxid || ''
-        const cleanedWxidMatch = resolvedWxid.match(/^(wxid_[^_]+)/i)
-        const cleanedWxid = cleanedWxidMatch?.[1] || resolvedWxid
+        const resolvedWxidRaw = String(wxid || '').trim()
+        const cleanedWxid = normalizeAccountId(resolvedWxidRaw)
+        const resolvedWxid = cleanedWxid || resolvedWxidRaw
         const wxidCandidates = new Set<string>([
+          resolvedWxidRaw.toLowerCase(),
           resolvedWxid.trim().toLowerCase(),
           cleanedWxid.trim().toLowerCase()
         ].filter(Boolean))
@@ -140,12 +152,21 @@ function Sidebar() {
           displayName: fallbackDisplayName
         })
 
-        if (!resolvedWxid) return
+        if (!resolvedWxidRaw && !resolvedWxid) return
 
         // 第二阶段：后台补齐名称（不会阻塞首屏）。
         void (async () => {
           try {
-            const myContact = await window.electronAPI.chat.getContact(resolvedWxid)
+            let myContact: Awaited<ReturnType<typeof window.electronAPI.chat.getContact>> | null = null
+            for (const candidate of Array.from(new Set([resolvedWxidRaw, resolvedWxid, cleanedWxid].filter(Boolean)))) {
+              const contact = await window.electronAPI.chat.getContact(candidate)
+              if (!contact) continue
+              if (!myContact) myContact = contact
+              if (contact.remark || contact.nickName || contact.alias) {
+                myContact = contact
+                break
+              }
+            }
             const fromContact = pickFirstValidName(
               myContact?.remark,
               myContact?.nickName,
@@ -157,9 +178,10 @@ function Sidebar() {
               return
             }
 
-            const enrichTargets = Array.from(new Set([resolvedWxid, cleanedWxid, 'self'].filter(Boolean)))
+            const enrichTargets = Array.from(new Set([resolvedWxidRaw, resolvedWxid, cleanedWxid, 'self'].filter(Boolean)))
             const enrichedResult = await window.electronAPI.chat.enrichSessionsContactInfo(enrichTargets)
             const enrichedDisplayName = pickFirstValidName(
+              enrichedResult.contacts?.[resolvedWxidRaw]?.displayName,
               enrichedResult.contacts?.[resolvedWxid]?.displayName,
               enrichedResult.contacts?.[cleanedWxid]?.displayName,
               enrichedResult.contacts?.self?.displayName,
