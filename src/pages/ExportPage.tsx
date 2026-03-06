@@ -39,6 +39,7 @@ import {
 } from '../services/exportBridge'
 import { useContactTypeCountsStore } from '../stores/contactTypeCountsStore'
 import { SnsPostItem } from '../components/Sns/SnsPostItem'
+import { ContactSnsTimelineDialog } from '../components/Sns/ContactSnsTimelineDialog'
 import type { SnsPost } from '../types/sns'
 import './ExportPage.scss'
 
@@ -2241,6 +2242,21 @@ function ExportPage() {
     setSessionSnsTimelineStatsLoading(false)
   }, [])
 
+  const sessionSnsTimelineInitialTotalPosts = useMemo(() => {
+    const username = String(sessionSnsTimelineTarget?.username || '').trim()
+    if (!username) return null
+    if (!Object.prototype.hasOwnProperty.call(snsUserPostCounts, username)) return null
+    const count = Number(snsUserPostCounts[username] || 0)
+    return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0
+  }, [sessionSnsTimelineTarget, snsUserPostCounts])
+
+  const sessionSnsTimelineInitialTotalPostsLoading = useMemo(() => {
+    const username = String(sessionSnsTimelineTarget?.username || '').trim()
+    if (!username) return false
+    if (Object.prototype.hasOwnProperty.call(snsUserPostCounts, username)) return false
+    return snsUserPostCountsStatus === 'loading' || snsUserPostCountsStatus === 'idle'
+  }, [sessionSnsTimelineTarget, snsUserPostCounts, snsUserPostCountsStatus])
+
   const openSessionSnsTimelineByTarget = useCallback((target: SessionSnsTimelineTarget) => {
     sessionSnsRankRequestTokenRef.current += 1
     sessionSnsRankLoadingRef.current = false
@@ -2255,22 +2271,21 @@ function ExportPage() {
     setSessionSnsTimelineHasMore(false)
     setSessionSnsTimelineLoadingMore(false)
     setSessionSnsTimelineLoading(false)
-
-    if (snsUserPostCountsStatus === 'ready') {
+    const hasKnownCount = Object.prototype.hasOwnProperty.call(snsUserPostCounts, target.username)
+    if (hasKnownCount) {
       const count = Number(snsUserPostCounts[target.username] || 0)
-      setSessionSnsTimelineTotalPosts(Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0)
+      const normalizedCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0
+      setSessionSnsTimelineTotalPosts(normalizedCount)
       setSessionSnsTimelineStatsLoading(false)
-      setSessionSnsRankTotalPosts(Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0)
+      setSessionSnsRankTotalPosts(normalizedCount)
     } else {
       setSessionSnsTimelineTotalPosts(null)
-      setSessionSnsTimelineStatsLoading(true)
+      setSessionSnsTimelineStatsLoading(snsUserPostCountsStatus === 'loading' || snsUserPostCountsStatus === 'idle')
       setSessionSnsRankTotalPosts(null)
     }
 
-    void loadSessionSnsTimelinePosts(target, { reset: true })
     void loadSnsUserPostCounts()
   }, [
-    loadSessionSnsTimelinePosts,
     loadSnsUserPostCounts,
     snsUserPostCounts,
     snsUserPostCountsStatus
@@ -4973,16 +4988,16 @@ function ExportPage() {
 
   useEffect(() => {
     if (!sessionSnsTimelineTarget) return
-    if (snsUserPostCountsStatus === 'loading' || snsUserPostCountsStatus === 'idle') {
-      setSessionSnsTimelineStatsLoading(true)
-      return
-    }
-    if (snsUserPostCountsStatus === 'ready') {
+    if (Object.prototype.hasOwnProperty.call(snsUserPostCounts, sessionSnsTimelineTarget.username)) {
       const total = Number(snsUserPostCounts[sessionSnsTimelineTarget.username] || 0)
       const normalizedTotal = Number.isFinite(total) ? Math.max(0, Math.floor(total)) : 0
       setSessionSnsTimelineTotalPosts(normalizedTotal)
       setSessionSnsRankTotalPosts(normalizedTotal)
       setSessionSnsTimelineStatsLoading(false)
+      return
+    }
+    if (snsUserPostCountsStatus === 'loading' || snsUserPostCountsStatus === 'idle') {
+      setSessionSnsTimelineStatsLoading(true)
       return
     }
     setSessionSnsTimelineTotalPosts(null)
@@ -6213,136 +6228,12 @@ function ExportPage() {
             </div>
           )}
 
-          {sessionSnsTimelineTarget && (
-            <div className="export-session-sns-overlay" onClick={closeSessionSnsTimeline}>
-              <div
-                className="export-session-sns-dialog"
-                role="dialog"
-                aria-modal="true"
-                aria-label="联系人朋友圈"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <div className="sns-dialog-header">
-                  <div className="sns-dialog-header-main">
-                    <div className="sns-dialog-avatar">
-                      {sessionSnsTimelineTarget.avatarUrl ? (
-                        <img src={sessionSnsTimelineTarget.avatarUrl} alt="" />
-                      ) : (
-                        <span>{getAvatarLetter(sessionSnsTimelineTarget.displayName || sessionSnsTimelineTarget.username)}</span>
-                      )}
-                    </div>
-                    <div className="sns-dialog-meta">
-                      <h4>{sessionSnsTimelineTarget.displayName}</h4>
-                      <div className="sns-dialog-username">@{sessionSnsTimelineTarget.username}</div>
-                      <div className="sns-dialog-stats">{renderSessionSnsTimelineStats()}</div>
-                    </div>
-                  </div>
-                  <div className="sns-dialog-header-actions">
-                    <div className="sns-dialog-rank-switch">
-                      <button
-                        type="button"
-                        className={`sns-dialog-rank-btn ${sessionSnsRankMode === 'likes' ? 'active' : ''}`}
-                        onClick={() => toggleSessionSnsRankMode('likes')}
-                      >
-                        点赞排行
-                      </button>
-                      <button
-                        type="button"
-                        className={`sns-dialog-rank-btn ${sessionSnsRankMode === 'comments' ? 'active' : ''}`}
-                        onClick={() => toggleSessionSnsRankMode('comments')}
-                      >
-                        评论排行
-                      </button>
-                      {sessionSnsRankMode && (
-                        <div
-                          className="sns-dialog-rank-panel"
-                          role="region"
-                          aria-label={sessionSnsRankMode === 'likes' ? '点赞排行' : '评论排行'}
-                        >
-                          {sessionSnsRankLoading && (
-                            <div className="sns-dialog-rank-loading">
-                              <Loader2 size={12} className="spin" />
-                              <span>
-                                {sessionSnsRankTotalPosts !== null && sessionSnsRankTotalPosts > 0
-                                  ? `统计中，已加载 ${sessionSnsRankLoadedPosts} / ${sessionSnsRankTotalPosts} 条`
-                                  : `统计中，已加载 ${sessionSnsRankLoadedPosts} 条`}
-                              </span>
-                            </div>
-                          )}
-                          {!sessionSnsRankLoading && sessionSnsRankError ? (
-                            <div className="sns-dialog-rank-empty">{sessionSnsRankError}</div>
-                          ) : !sessionSnsRankLoading && sessionSnsActiveRankings.length === 0 ? (
-                            <div className="sns-dialog-rank-empty">
-                              {sessionSnsRankMode === 'likes' ? '暂无点赞数据' : '暂无评论数据'}
-                            </div>
-                          ) : (
-                            sessionSnsActiveRankings.slice(0, SNS_RANK_DISPLAY_LIMIT).map((item, index) => (
-                              <div className="sns-dialog-rank-row" key={`${sessionSnsRankMode}-${item.name}`}>
-                                <span className="sns-dialog-rank-index">{index + 1}</span>
-                                <span className="sns-dialog-rank-name" title={item.name}>{item.name}</span>
-                                <span className="sns-dialog-rank-count">
-                                  {item.count.toLocaleString('zh-CN')}
-                                  {sessionSnsRankMode === 'likes' ? '次' : '条'}
-                                </span>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    <button className="close-btn" type="button" onClick={closeSessionSnsTimeline}>
-                      <X size={16} />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="sns-dialog-tip">
-                  在微信桌面客户端中打开这个人的朋友圈浏览，可快速把其朋友圈同步到这里。若你在乎这个人，一定要试试～
-                </div>
-
-                <div className="sns-dialog-body">
-                  {sessionSnsTimelinePosts.length > 0 && (
-                    <div className="posts-list author-timeline-posts-list export-session-sns-posts-list">
-                      {sessionSnsTimelinePosts.map((post) => (
-                        <SnsPostItem
-                          key={post.id}
-                          post={post}
-                          onPreview={(src, isVideo, liveVideoPath) => {
-                            if (isVideo) {
-                              void window.electronAPI.window.openVideoPlayerWindow(src)
-                            } else {
-                              void window.electronAPI.window.openImageViewerWindow(src, liveVideoPath || undefined)
-                            }
-                          }}
-                          onDebug={() => {}}
-                          hideAuthorMeta
-                        />
-                      ))}
-                    </div>
-                  )}
-
-                  {sessionSnsTimelineLoading && (
-                    <div className="sns-dialog-status">正在加载该联系人的朋友圈...</div>
-                  )}
-
-                  {!sessionSnsTimelineLoading && sessionSnsTimelinePosts.length === 0 && (
-                    <div className="sns-dialog-status empty">该联系人暂无朋友圈</div>
-                  )}
-
-                  {!sessionSnsTimelineLoading && sessionSnsTimelineHasMore && (
-                    <button
-                      className="sns-dialog-load-more"
-                      type="button"
-                      onClick={loadMoreSessionSnsTimeline}
-                      disabled={sessionSnsTimelineLoadingMore}
-                    >
-                      {sessionSnsTimelineLoadingMore ? '正在加载...' : '加载更多'}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
+          <ContactSnsTimelineDialog
+            target={sessionSnsTimelineTarget}
+            onClose={closeSessionSnsTimeline}
+            initialTotalPosts={sessionSnsTimelineInitialTotalPosts}
+            initialTotalPostsLoading={sessionSnsTimelineInitialTotalPostsLoading}
+          />
         </div>
       </div>
 
