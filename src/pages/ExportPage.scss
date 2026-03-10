@@ -1914,27 +1914,12 @@
   }
 
   .contacts-list-header-left {
-    position: sticky;
-    left: 0;
-    z-index: 12;
     display: flex;
     align-items: center;
     gap: var(--contacts-column-gap);
     width: var(--contacts-left-sticky-width);
     min-width: var(--contacts-left-sticky-width);
     max-width: var(--contacts-left-sticky-width);
-    background: var(--contacts-header-bg);
-
-    &::after {
-      content: '';
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      right: calc(-1 * var(--contacts-column-gap));
-      width: var(--contacts-column-gap);
-      background: var(--contacts-header-bg);
-      pointer-events: none;
-    }
   }
 
   .contacts-list-header-select {
