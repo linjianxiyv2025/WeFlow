@@ -406,6 +406,10 @@ export class WcdbService {
     return this.callWorker('getMessageById', { sessionId, localId })
   }
 
+  async searchMessages(keyword: string, sessionId?: string, limit?: number, offset?: number, beginTimestamp?: number, endTimestamp?: number): Promise<{ success: boolean; messages?: any[]; error?: string }> {
+    return this.callWorker('searchMessages', { keyword, sessionId, limit, offset, beginTimestamp, endTimestamp })
+  }
+
   /**
    * 获取语音数据
    */

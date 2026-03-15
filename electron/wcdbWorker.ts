@@ -140,6 +140,9 @@ if (parentPort) {
                 case 'getMessageById':
                     result = await core.getMessageById(payload.sessionId, payload.localId)
                     break
+                case 'searchMessages':
+                    result = await core.searchMessages(payload.keyword, payload.sessionId, payload.limit, payload.offset, payload.beginTimestamp, payload.endTimestamp)
+                    break
                 case 'getVoiceData':
                     result = await core.getVoiceData(payload.sessionId, payload.createTime, payload.candidates, payload.localId, payload.svrId)
                     if (!result.success) {

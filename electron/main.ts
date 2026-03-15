@@ -1563,6 +1563,10 @@ function registerIpcHandlers() {
     return chatService.getMessageById(sessionId, localId)
   })
 
+  ipcMain.handle('chat:searchMessages', async (_, keyword: string, sessionId?: string, limit?: number, offset?: number, beginTimestamp?: number, endTimestamp?: number) => {
+    return chatService.searchMessages(keyword, sessionId, limit, offset, beginTimestamp, endTimestamp)
+  })
+
   ipcMain.handle('chat:execQuery', async (_, kind: string, path: string | null, sql: string) => {
     return chatService.execQuery(kind, path, sql)
   })

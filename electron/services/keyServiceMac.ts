@@ -507,26 +507,39 @@ export class KeyServiceMac {
 
       const wxidCandidates = this.collectWxidCandidates(accountPath, wxid)
       if (wxidCandidates.length === 0) {
-        return { success: false, error: '未找到可用的 wxid 候选，请先选择正确的账号目录' }
+        return { success: false, error: '未找到可用的账号候选，请先选择正确的账号目录' }
       }
 
+      const accountPathCandidates = this.collectAccountPathCandidates(accountPath)
+
       // 使用模板密文做验真，避免 wxid 不匹配导致快速方案算错
-      let verifyCiphertext: Buffer | null = null
-      if (accountPath && existsSync(accountPath)) {
-        const template = await this._findTemplateData(accountPath, 32)
-        verifyCiphertext = template.ciphertext
-      }
-      if (verifyCiphertext) {
+      if (accountPathCandidates.length > 0) {
         onStatus?.(`正在校验候选 wxid（${wxidCandidates.length} 个）...`)
-        for (const candidateWxid of wxidCandidates) {
-          for (const code of codes) {
-            const { xorKey, aesKey } = this.deriveImageKeys(code, candidateWxid)
-            if (!this.verifyDerivedAesKey(aesKey, verifyCiphertext)) continue
-            onStatus?.(`密钥获取成功 (wxid: ${candidateWxid}, code: ${code})`)
-            return { success: true, xorKey, aesKey }
+        for (const candidateAccountPath of accountPathCandidates) {
+          if (!existsSync(candidateAccountPath)) continue
+          const template = await this._findTemplateData(candidateAccountPath, 32)
+          if (!template.ciphertext) continue
+
+          const accountDirWxid = basename(candidateAccountPath)
+          const orderedWxids: string[] = []
+          this.pushAccountIdCandidates(orderedWxids, accountDirWxid)
+          for (const candidate of wxidCandidates) {
+            this.pushAccountIdCandidates(orderedWxids, candidate)
+          }
+
+          for (const candidateWxid of orderedWxids) {
+            for (const code of codes) {
+              const { xorKey, aesKey } = this.deriveImageKeys(code, candidateWxid)
+              if (!this.verifyDerivedAesKey(aesKey, template.ciphertext)) continue
+              onStatus?.(`密钥获取成功 (wxid: ${candidateWxid}, code: ${code})`)
+              return { success: true, xorKey, aesKey }
+            }
           }
         }
-        return { success: false, error: '缓存 code 与当前账号 wxid 未匹配，请确认账号目录后重试，或使用内存扫描' }
+        return {
+          success: false,
+          error: '缓存 code 与当前账号 wxid 未匹配。若数据库密钥获取后微信刚刚崩溃并重启，可能当前选中的账号目录已经不是最新会话；请先重新扫描 wxid，或直接使用内存扫描。'
+        }
       }
 
       // 无法获取模板密文时，回退为历史策略（优先级最高候选 + 第一条 code）
@@ -561,16 +574,21 @@ export class KeyServiceMac {
 
       onProgress?.(`XOR 密钥: 0x${xorKey.toString(16).padStart(2, '0')}，正在查找微信进程...`)
 
-      // 2. 找微信 PID
-      const pid = await this.findWeChatPid()
-      if (!pid) return { success: false, error: '微信进程未运行，请先启动微信' }
-
-      onProgress?.(`已找到微信进程 PID=${pid}，正在扫描内存...`)
-
-      // 3. 持续轮询内存扫描
+      // 2. 持续轮询微信 PID 与内存扫描，兼容微信崩溃后重启 PID 变化
       const deadline = Date.now() + 60_000
       let scanCount = 0
+      let lastPid: number | null = null
       while (Date.now() < deadline) {
+        const pid = await this.findWeChatPid()
+        if (!pid) {
+          onProgress?.('暂未检测到微信主进程，请确认微信已经重新打开...')
+          await new Promise(r => setTimeout(r, 2000))
+          continue
+        }
+        if (lastPid !== pid) {
+          lastPid = pid
+          onProgress?.(`已找到微信进程 PID=${pid}，正在扫描内存...`)
+        }
         scanCount++
         onProgress?.(`第 ${scanCount} 次扫描内存，请在微信中打开图片大图...`)
         const aesKey = await this._scanMemoryForAesKey(pid, ciphertext, onProgress)
@@ -838,11 +856,8 @@ export class KeyServiceMac {
   }
 
   private async findWeChatPid(): Promise<number | null> {
-    const { execSync } = await import('child_process')
     try {
-      const output = execSync('pgrep -x WeChat', { encoding: 'utf8' })
-      const pid = parseInt(output.trim())
-      return isNaN(pid) ? null : pid
+      return await this.getWeChatPid()
     } catch {
       return null
     }
@@ -859,12 +874,70 @@ export class KeyServiceMac {
     this.machPortDeallocate = null
   }
 
+  private normalizeAccountId(value: string): string {
+    const trimmed = String(value || '').trim()
+    if (!trimmed) return ''
+
+    if (trimmed.toLowerCase().startsWith('wxid_')) {
+      const match = trimmed.match(/^(wxid_[^_]+)/i)
+      return match?.[1] || trimmed
+    }
+
+    const suffixMatch = trimmed.match(/^(.+)_([a-zA-Z0-9]{4})$/)
+    return suffixMatch ? suffixMatch[1] : trimmed
+  }
+
+  private isIgnoredAccountName(value: string): boolean {
+    const lowered = String(value || '').trim().toLowerCase()
+    if (!lowered) return true
+    return lowered === 'xwechat_files' ||
+      lowered === 'all_users' ||
+      lowered === 'backup' ||
+      lowered === 'wmpf' ||
+      lowered === 'app_data'
+  }
+
+  private isReasonableAccountId(value: string): boolean {
+    const trimmed = String(value || '').trim()
+    if (!trimmed) return false
+    if (trimmed.includes('/') || trimmed.includes('\\')) return false
+    return !this.isIgnoredAccountName(trimmed)
+  }
+
+  private isAccountDirPath(entryPath: string): boolean {
+    return existsSync(join(entryPath, 'db_storage')) ||
+      existsSync(join(entryPath, 'msg')) ||
+      existsSync(join(entryPath, 'FileStorage', 'Image')) ||
+      existsSync(join(entryPath, 'FileStorage', 'Image2'))
+  }
+
+  private resolveXwechatRootFromPath(accountPath?: string): string | null {
+    const normalized = String(accountPath || '').replace(/\\/g, '/').replace(/\/+$/, '')
+    if (!normalized) return null
+    const marker = '/xwechat_files'
+    const markerIdx = normalized.indexOf(marker)
+    if (markerIdx < 0) return null
+    return normalized.slice(0, markerIdx + marker.length)
+  }
+
+  private pushAccountIdCandidates(candidates: string[], value?: string): void {
+    const pushUnique = (item: string) => {
+      const trimmed = String(item || '').trim()
+      if (!trimmed || candidates.includes(trimmed)) return
+      candidates.push(trimmed)
+    }
+
+    const raw = String(value || '').trim()
+    if (!this.isReasonableAccountId(raw)) return
+    pushUnique(raw)
+    const normalized = this.normalizeAccountId(raw)
+    if (normalized && normalized !== raw && this.isReasonableAccountId(normalized)) {
+      pushUnique(normalized)
+    }
+  }
+
   private cleanWxid(wxid: string): string {
-    const first = wxid.indexOf('_')
-    if (first === -1) return wxid
-    const second = wxid.indexOf('_', first + 1)
-    if (second === -1) return wxid
-    return wxid.substring(0, second)
+    return this.normalizeAccountId(wxid)
   }
 
   private deriveImageKeys(code: number, wxid: string): { xorKey: number; aesKey: string } {
@@ -877,32 +950,26 @@ export class KeyServiceMac {
 
   private collectWxidCandidates(accountPath?: string, wxidParam?: string): string[] {
     const candidates: string[] = []
-    const pushUnique = (value: string) => {
-      const v = String(value || '').trim()
-      if (!v || candidates.includes(v)) return
-      candidates.push(v)
-    }
 
     // 1) 显式传参优先
-    if (wxidParam && wxidParam.startsWith('wxid_')) pushUnique(wxidParam)
+    this.pushAccountIdCandidates(candidates, wxidParam)
 
     if (accountPath) {
       const normalized = accountPath.replace(/\\/g, '/').replace(/\/+$/, '')
       const dirName = basename(normalized)
-      // 2) 当前目录名为 wxid_*
-      if (dirName.startsWith('wxid_')) pushUnique(dirName)
+      // 2) 当前目录名本身就是账号目录
+      this.pushAccountIdCandidates(candidates, dirName)
 
-      // 3) 从 xwechat_files 根目录枚举全部 wxid_* 目录
-      const marker = '/xwechat_files'
-      const markerIdx = normalized.indexOf(marker)
-      if (markerIdx >= 0) {
-        const root = normalized.slice(0, markerIdx + marker.length)
+      // 3) 从 xwechat_files 根目录枚举全部账号目录
+      const root = this.resolveXwechatRootFromPath(accountPath)
+      if (root) {
         if (existsSync(root)) {
           try {
             for (const entry of readdirSync(root, { withFileTypes: true })) {
               if (!entry.isDirectory()) continue
-              if (!entry.name.startsWith('wxid_')) continue
-              pushUnique(entry.name)
+              const entryPath = join(root, entry.name)
+              if (!this.isAccountDirPath(entryPath)) continue
+              this.pushAccountIdCandidates(candidates, entry.name)
             }
           } catch {
             // ignore
@@ -911,7 +978,39 @@ export class KeyServiceMac {
       }
     }
 
-    pushUnique('unknown')
+    if (candidates.length === 0) candidates.push('unknown')
+    return candidates
+  }
+
+  private collectAccountPathCandidates(accountPath?: string): string[] {
+    const candidates: string[] = []
+    const pushUnique = (value?: string) => {
+      const v = String(value || '').trim()
+      if (!v || candidates.includes(v)) return
+      candidates.push(v)
+    }
+
+    if (accountPath) pushUnique(accountPath)
+
+    if (accountPath) {
+      const root = this.resolveXwechatRootFromPath(accountPath)
+      if (root) {
+        if (existsSync(root)) {
+          try {
+            for (const entry of readdirSync(root, { withFileTypes: true })) {
+              if (!entry.isDirectory()) continue
+              const entryPath = join(root, entry.name)
+              if (!this.isAccountDirPath(entryPath)) continue
+              if (!this.isReasonableAccountId(entry.name)) continue
+              pushUnique(entryPath)
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+
     return candidates
   }
 

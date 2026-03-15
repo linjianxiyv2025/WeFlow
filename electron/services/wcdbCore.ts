@@ -106,6 +106,7 @@ export class WcdbCore {
   private wcdbGetEmoticonCdnUrl: any = null
   private wcdbGetDbStatus: any = null
   private wcdbGetVoiceData: any = null
+  private wcdbSearchMessages: any = null
   private wcdbGetSnsTimeline: any = null
   private wcdbGetSnsAnnualStats: any = null
   private wcdbInstallSnsBlockDeleteTrigger: any = null
@@ -817,6 +818,13 @@ export class WcdbCore {
         this.wcdbGetVoiceData = null
       }
 
+      // wcdb_status wcdb_search_messages(wcdb_handle handle, const char* session_id, const char* keyword, int32_t limit, int32_t offset, int32_t begin_timestamp, int32_t end_timestamp, char** out_json)
+      try {
+        this.wcdbSearchMessages = this.lib.func('int32 wcdb_search_messages(int64 handle, const char* sessionId, const char* keyword, int32 limit, int32 offset, int32 beginTimestamp, int32 endTimestamp, _Out_ void** outJson)')
+      } catch {
+        this.wcdbSearchMessages = null
+      }
+
       // wcdb_status wcdb_get_sns_timeline(wcdb_handle handle, int32_t limit, int32_t offset, const char* username, const char* keyword, int32_t start_time, int32_t end_time, char** out_json)
       try {
         this.wcdbGetSnsTimeline = this.lib.func('int32 wcdb_get_sns_timeline(int64 handle, int32 limit, int32 offset, const char* username, const char* keyword, int32 startTime, int32 endTime, _Out_ void** outJson)')
@@ -1488,10 +1496,19 @@ export class WcdbCore {
       }
 
       // 让出控制权，避免阻塞事件循环
+      const handle = this.handle
       await new Promise(resolve => setImmediate(resolve))
 
+      // await 后 handle 可能已被关闭，需重新检查
+      if (handle === null || this.handle !== handle) {
+        if (Object.keys(resultMap).length > 0) {
+          return { success: true, map: resultMap, error: '连接已断开' }
+        }
+        return { success: false, error: '连接已断开' }
+      }
+
       const outPtr = [null as any]
-      const result = this.wcdbGetAvatarUrls(this.handle, JSON.stringify(toFetch), outPtr)
+      const result = this.wcdbGetAvatarUrls(handle, JSON.stringify(toFetch), outPtr)
 
       // DLL 调用后再次让出控制权
       await new Promise(resolve => setImmediate(resolve))
@@ -2268,6 +2285,36 @@ export class WcdbCore {
         resolve({ success: false, error: String(e) })
       }
     })
+  }
+
+  async searchMessages(keyword: string, sessionId?: string, limit?: number, offset?: number, beginTimestamp?: number, endTimestamp?: number): Promise<{ success: boolean; messages?: any[]; error?: string }> {
+    if (!this.ensureReady()) return { success: false, error: 'WCDB 未连接' }
+    if (!this.wcdbSearchMessages) return { success: false, error: '当前 DLL 版本不支持搜索消息' }
+    try {
+      const handle = this.handle
+      await new Promise(resolve => setImmediate(resolve))
+      if (handle === null || this.handle !== handle) return { success: false, error: '连接已断开' }
+      const outPtr = [null as any]
+      const result = this.wcdbSearchMessages(
+        handle,
+        sessionId || '',
+        keyword,
+        limit || 50,
+        offset || 0,
+        beginTimestamp || 0,
+        endTimestamp || 0,
+        outPtr
+      )
+      if (result !== 0 || !outPtr[0]) {
+        return { success: false, error: `搜索消息失败: ${result}` }
+      }
+      const jsonStr = this.decodeJsonPtr(outPtr[0])
+      if (!jsonStr) return { success: false, error: '解析搜索结果失败' }
+      const messages = JSON.parse(jsonStr)
+      return { success: true, messages }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
   }
 
   async getSnsTimeline(limit: number, offset: number, usernames?: string[], keyword?: string, startTime?: number, endTime?: number): Promise<{ success: boolean; timeline?: any[]; error?: string }> {

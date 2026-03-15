@@ -6699,6 +6699,20 @@ class ChatService {
     }
   }
 
+  async searchMessages(keyword: string, sessionId?: string, limit?: number, offset?: number, beginTimestamp?: number, endTimestamp?: number): Promise<{ success: boolean; messages?: Message[]; error?: string }> {
+    try {
+      const result = await wcdbService.searchMessages(keyword, sessionId, limit, offset, beginTimestamp, endTimestamp)
+      if (!result.success || !result.messages) {
+        return { success: false, error: result.error || '搜索失败' }
+      }
+      const messages = result.messages.map((row: any) => this.parseMessage(row)).filter(Boolean) as Message[]
+      return { success: true, messages }
+    } catch (e) {
+      console.error('ChatService: searchMessages 失败:', e)
+      return { success: false, error: String(e) }
+    }
+  }
+
   private parseMessage(row: any): Message {
     const sourceInfo = this.getMessageSourceInfo(row)
     const rawContent = this.decodeMessageContent(
