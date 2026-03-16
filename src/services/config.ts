@@ -44,6 +44,7 @@ export const CONFIG_KEYS = {
   EXPORT_SESSION_CONTENT_METRIC_CACHE_MAP: 'exportSessionContentMetricCacheMap',
   EXPORT_SNS_STATS_CACHE_MAP: 'exportSnsStatsCacheMap',
   EXPORT_SNS_USER_POST_COUNTS_CACHE_MAP: 'exportSnsUserPostCountsCacheMap',
+  EXPORT_SESSION_MUTUAL_FRIENDS_CACHE_MAP: 'exportSessionMutualFriendsCacheMap',
   SNS_PAGE_CACHE_MAP: 'snsPageCacheMap',
   CONTACTS_LOAD_TIMEOUT_MS: 'contactsLoadTimeoutMs',
   CONTACTS_LIST_CACHE_MAP: 'contactsListCacheMap',
@@ -596,6 +597,34 @@ export interface ExportSnsUserPostCountsCacheItem {
   counts: Record<string, number>
 }
 
+export type ExportSessionMutualFriendDirection = 'incoming' | 'outgoing' | 'bidirectional'
+export type ExportSessionMutualFriendBehavior = 'likes' | 'comments' | 'both'
+
+export interface ExportSessionMutualFriendCacheItem {
+  name: string
+  incomingLikeCount: number
+  incomingCommentCount: number
+  outgoingLikeCount: number
+  outgoingCommentCount: number
+  totalCount: number
+  latestTime: number
+  direction: ExportSessionMutualFriendDirection
+  behavior: ExportSessionMutualFriendBehavior
+}
+
+export interface ExportSessionMutualFriendsCacheEntry {
+  count: number
+  items: ExportSessionMutualFriendCacheItem[]
+  loadedPosts: number
+  totalPosts: number | null
+  computedAt: number
+}
+
+export interface ExportSessionMutualFriendsCacheItem {
+  updatedAt: number
+  metrics: Record<string, ExportSessionMutualFriendsCacheEntry>
+}
+
 export interface SnsPageOverviewCache {
   totalPosts: number
   totalFriends: number
@@ -853,6 +882,148 @@ export async function setExportSnsUserPostCountsCache(
   }
 
   await config.set(CONFIG_KEYS.EXPORT_SNS_USER_POST_COUNTS_CACHE_MAP, map)
+}
+
+const normalizeMutualFriendDirection = (value: unknown): ExportSessionMutualFriendDirection | null => {
+  if (value === 'incoming' || value === 'outgoing' || value === 'bidirectional') {
+    return value
+  }
+  return null
+}
+
+const normalizeMutualFriendBehavior = (value: unknown): ExportSessionMutualFriendBehavior | null => {
+  if (value === 'likes' || value === 'comments' || value === 'both') {
+    return value
+  }
+  return null
+}
+
+const normalizeExportSessionMutualFriendsCacheEntry = (raw: unknown): ExportSessionMutualFriendsCacheEntry | null => {
+  if (!raw || typeof raw !== 'object') return null
+  const source = raw as Record<string, unknown>
+  const count = Number(source.count)
+  const loadedPosts = Number(source.loadedPosts)
+  const computedAt = Number(source.computedAt)
+  const itemsRaw = Array.isArray(source.items) ? source.items : []
+  const totalPostsRaw = source.totalPosts
+  const totalPosts = totalPostsRaw === null || totalPostsRaw === undefined
+    ? null
+    : Number(totalPostsRaw)
+
+  if (!Number.isFinite(count) || count < 0 || !Number.isFinite(loadedPosts) || loadedPosts < 0 || !Number.isFinite(computedAt) || computedAt < 0) {
+    return null
+  }
+
+  const items: ExportSessionMutualFriendCacheItem[] = []
+  for (const itemRaw of itemsRaw) {
+    if (!itemRaw || typeof itemRaw !== 'object') continue
+    const item = itemRaw as Record<string, unknown>
+    const name = String(item.name || '').trim()
+    const direction = normalizeMutualFriendDirection(item.direction)
+    const behavior = normalizeMutualFriendBehavior(item.behavior)
+    const incomingLikeCount = Number(item.incomingLikeCount)
+    const incomingCommentCount = Number(item.incomingCommentCount)
+    const outgoingLikeCount = Number(item.outgoingLikeCount)
+    const outgoingCommentCount = Number(item.outgoingCommentCount)
+    const totalCount = Number(item.totalCount)
+    const latestTime = Number(item.latestTime)
+    if (!name || !direction || !behavior) continue
+    if (
+      !Number.isFinite(incomingLikeCount) || incomingLikeCount < 0 ||
+      !Number.isFinite(incomingCommentCount) || incomingCommentCount < 0 ||
+      !Number.isFinite(outgoingLikeCount) || outgoingLikeCount < 0 ||
+      !Number.isFinite(outgoingCommentCount) || outgoingCommentCount < 0 ||
+      !Number.isFinite(totalCount) || totalCount < 0 ||
+      !Number.isFinite(latestTime) || latestTime < 0
+    ) {
+      continue
+    }
+    items.push({
+      name,
+      incomingLikeCount: Math.floor(incomingLikeCount),
+      incomingCommentCount: Math.floor(incomingCommentCount),
+      outgoingLikeCount: Math.floor(outgoingLikeCount),
+      outgoingCommentCount: Math.floor(outgoingCommentCount),
+      totalCount: Math.floor(totalCount),
+      latestTime: Math.floor(latestTime),
+      direction,
+      behavior
+    })
+  }
+
+  return {
+    count: Math.floor(count),
+    items,
+    loadedPosts: Math.floor(loadedPosts),
+    totalPosts: totalPosts === null
+      ? null
+      : (Number.isFinite(totalPosts) && totalPosts >= 0 ? Math.floor(totalPosts) : null),
+    computedAt: Math.floor(computedAt)
+  }
+}
+
+export async function getExportSessionMutualFriendsCache(scopeKey: string): Promise<ExportSessionMutualFriendsCacheItem | null> {
+  if (!scopeKey) return null
+  const value = await config.get(CONFIG_KEYS.EXPORT_SESSION_MUTUAL_FRIENDS_CACHE_MAP)
+  if (!value || typeof value !== 'object') return null
+  const rawMap = value as Record<string, unknown>
+  const rawItem = rawMap[scopeKey]
+  if (!rawItem || typeof rawItem !== 'object') return null
+
+  const rawUpdatedAt = (rawItem as Record<string, unknown>).updatedAt
+  const rawMetrics = (rawItem as Record<string, unknown>).metrics
+  if (!rawMetrics || typeof rawMetrics !== 'object') return null
+
+  const metrics: Record<string, ExportSessionMutualFriendsCacheEntry> = {}
+  for (const [sessionIdRaw, metricRaw] of Object.entries(rawMetrics as Record<string, unknown>)) {
+    const sessionId = String(sessionIdRaw || '').trim()
+    if (!sessionId) continue
+    const metric = normalizeExportSessionMutualFriendsCacheEntry(metricRaw)
+    if (!metric) continue
+    metrics[sessionId] = metric
+  }
+
+  return {
+    updatedAt: typeof rawUpdatedAt === 'number' && Number.isFinite(rawUpdatedAt) ? rawUpdatedAt : 0,
+    metrics
+  }
+}
+
+export async function setExportSessionMutualFriendsCache(
+  scopeKey: string,
+  metrics: Record<string, ExportSessionMutualFriendsCacheEntry>
+): Promise<void> {
+  if (!scopeKey) return
+  const current = await config.get(CONFIG_KEYS.EXPORT_SESSION_MUTUAL_FRIENDS_CACHE_MAP)
+  const map = current && typeof current === 'object'
+    ? { ...(current as Record<string, unknown>) }
+    : {}
+
+  const normalized: Record<string, ExportSessionMutualFriendsCacheEntry> = {}
+  for (const [sessionIdRaw, metricRaw] of Object.entries(metrics || {})) {
+    const sessionId = String(sessionIdRaw || '').trim()
+    if (!sessionId) continue
+    const metric = normalizeExportSessionMutualFriendsCacheEntry(metricRaw)
+    if (!metric) continue
+    normalized[sessionId] = metric
+  }
+
+  map[scopeKey] = {
+    updatedAt: Date.now(),
+    metrics: normalized
+  }
+
+  await config.set(CONFIG_KEYS.EXPORT_SESSION_MUTUAL_FRIENDS_CACHE_MAP, map)
+}
+
+export async function clearExportSessionMutualFriendsCache(scopeKey: string): Promise<void> {
+  if (!scopeKey) return
+  const current = await config.get(CONFIG_KEYS.EXPORT_SESSION_MUTUAL_FRIENDS_CACHE_MAP)
+  if (!current || typeof current !== 'object') return
+  const map = { ...(current as Record<string, unknown>) }
+  if (!(scopeKey in map)) return
+  delete map[scopeKey]
+  await config.set(CONFIG_KEYS.EXPORT_SESSION_MUTUAL_FRIENDS_CACHE_MAP, map)
 }
 
 export async function getSnsPageCache(scopeKey: string): Promise<SnsPageCacheItem | null> {

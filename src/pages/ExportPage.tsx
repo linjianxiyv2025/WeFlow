@@ -1596,6 +1596,7 @@ function ExportPage() {
   const sessionMutualFriendsRunIdRef = useRef(0)
   const sessionMutualFriendsWorkerRunningRef = useRef(false)
   const sessionMutualFriendsBackgroundFeedTimerRef = useRef<number | null>(null)
+  const sessionMutualFriendsPersistTimerRef = useRef<number | null>(null)
   const sessionMutualFriendsVisibleRangeRef = useRef<{ startIndex: number; endIndex: number }>({
     startIndex: 0,
     endIndex: -1
@@ -2748,7 +2749,31 @@ function ExportPage() {
       window.clearTimeout(sessionMutualFriendsBackgroundFeedTimerRef.current)
       sessionMutualFriendsBackgroundFeedTimerRef.current = null
     }
+    if (sessionMutualFriendsPersistTimerRef.current) {
+      window.clearTimeout(sessionMutualFriendsPersistTimerRef.current)
+      sessionMutualFriendsPersistTimerRef.current = null
+    }
   }, [])
+
+  const flushSessionMutualFriendsCache = useCallback(async () => {
+    try {
+      const scopeKey = await ensureExportCacheScope()
+      await configService.setExportSessionMutualFriendsCache(
+        scopeKey,
+        sessionMutualFriendsDirectMetricsRef.current
+      )
+    } catch (error) {
+      console.error('写入导出页共同好友缓存失败:', error)
+    }
+  }, [ensureExportCacheScope])
+
+  const scheduleFlushSessionMutualFriendsCache = useCallback(() => {
+    if (sessionMutualFriendsPersistTimerRef.current) return
+    sessionMutualFriendsPersistTimerRef.current = window.setTimeout(() => {
+      sessionMutualFriendsPersistTimerRef.current = null
+      void flushSessionMutualFriendsCache()
+    }, SESSION_MEDIA_METRIC_CACHE_FLUSH_DELAY_MS)
+  }, [flushSessionMutualFriendsCache])
 
   const isSessionMutualFriendsReady = useCallback((sessionId: string): boolean => {
     if (!sessionId) return true
@@ -2879,10 +2904,35 @@ function ExportPage() {
     }
   }, [getSessionMutualFriendProfile])
 
+  const rebuildSessionMutualFriendsStateFromDirectMetrics = useCallback((sessionIds?: string[]) => {
+    const targets = Array.isArray(sessionIds) && sessionIds.length > 0
+      ? sessionIds
+      : Object.keys(sessionMutualFriendsDirectMetricsRef.current)
+    const nextMetrics: Record<string, SessionMutualFriendsMetric> = {}
+    const readyIds: string[] = []
+    for (const sessionIdRaw of targets) {
+      const sessionId = String(sessionIdRaw || '').trim()
+      if (!sessionId) continue
+      const rebuilt = rebuildSessionMutualFriendsMetric(sessionId)
+      if (!rebuilt) continue
+      nextMetrics[sessionId] = rebuilt
+      readyIds.push(sessionId)
+    }
+    sessionMutualFriendsMetricsRef.current = nextMetrics
+    setSessionMutualFriendsMetrics(nextMetrics)
+    if (readyIds.length > 0) {
+      for (const sessionId of readyIds) {
+        sessionMutualFriendsReadySetRef.current.add(sessionId)
+      }
+      patchSessionLoadTraceStage(readyIds, 'mutualFriends', 'done')
+    }
+  }, [patchSessionLoadTraceStage, rebuildSessionMutualFriendsMetric])
+
   const applySessionMutualFriendsMetric = useCallback((sessionId: string, directMetric: SessionMutualFriendsMetric) => {
     const normalizedSessionId = String(sessionId || '').trim()
     if (!normalizedSessionId) return
     sessionMutualFriendsDirectMetricsRef.current[normalizedSessionId] = directMetric
+    scheduleFlushSessionMutualFriendsCache()
 
     const impactedSessionIds = new Set<string>([normalizedSessionId])
     const allSessionIds = sessionsRef.current
@@ -2912,7 +2962,7 @@ function ExportPage() {
       }
       return changed ? next : prev
     })
-  }, [getSessionMutualFriendProfile, rebuildSessionMutualFriendsMetric])
+  }, [getSessionMutualFriendProfile, rebuildSessionMutualFriendsMetric, scheduleFlushSessionMutualFriendsCache])
 
   const isSessionMediaMetricReady = useCallback((sessionId: string): boolean => {
     if (!sessionId) return true
@@ -3339,11 +3389,13 @@ function ExportPage() {
       const [
         cachedContactsPayload,
         cachedMessageCountsPayload,
-        cachedContentMetricsPayload
+        cachedContentMetricsPayload,
+        cachedMutualFriendsPayload
       ] = await Promise.all([
         loadContactsCaches(scopeKey),
         configService.getExportSessionMessageCountCache(scopeKey),
-        configService.getExportSessionContentMetricCache(scopeKey)
+        configService.getExportSessionContentMetricCache(scopeKey),
+        configService.getExportSessionMutualFriendsCache(scopeKey)
       ])
       if (isStale()) return
 
@@ -3411,6 +3463,15 @@ function ExportPage() {
         if (cachedContentMetricReadySessionIds.length > 0) {
           patchSessionLoadTraceStage(cachedContentMetricReadySessionIds, 'mediaMetrics', 'done')
         }
+        const cachedMutualFriendDirectMetrics = Object.entries(cachedMutualFriendsPayload?.metrics || {}).reduce<Record<string, SessionMutualFriendsMetric>>((acc, [sessionIdRaw, metricRaw]) => {
+          const sessionId = String(sessionIdRaw || '').trim()
+          if (!exportableSessionIdSet.has(sessionId) || !isSingleContactSession(sessionId)) return acc
+          const metric = metricRaw as SessionMutualFriendsMetric | undefined
+          if (!metric || !Array.isArray(metric.items) || !Number.isFinite(metric.count)) return acc
+          acc[sessionId] = metric
+          return acc
+        }, {})
+        const cachedMutualFriendSessionIds = Object.keys(cachedMutualFriendDirectMetrics)
 
         if (isStale()) return
         if (Object.keys(cachedMessageCounts).length > 0) {
@@ -3421,6 +3482,13 @@ function ExportPage() {
         }
         if (Object.keys(cachedContentMetrics).length > 0) {
           mergeSessionContentMetrics(cachedContentMetrics)
+        }
+        if (cachedMutualFriendSessionIds.length > 0) {
+          sessionMutualFriendsDirectMetricsRef.current = cachedMutualFriendDirectMetrics
+          rebuildSessionMutualFriendsStateFromDirectMetrics(cachedMutualFriendSessionIds)
+        } else {
+          sessionMutualFriendsMetricsRef.current = {}
+          setSessionMutualFriendsMetrics({})
         }
         setSessions(baseSessions)
         sessionsHydratedAtRef.current = Date.now()
@@ -3622,7 +3690,7 @@ function ExportPage() {
     } finally {
       if (!isStale()) setIsLoading(false)
     }
-  }, [ensureExportCacheScope, loadContactsCaches, loadSessionMessageCounts, mergeSessionContentMetrics, patchSessionLoadTraceStage, resetSessionMediaMetricLoader, resetSessionMutualFriendsLoader, syncContactTypeCounts])
+  }, [ensureExportCacheScope, loadContactsCaches, loadSessionMessageCounts, mergeSessionContentMetrics, patchSessionLoadTraceStage, rebuildSessionMutualFriendsStateFromDirectMetrics, resetSessionMediaMetricLoader, resetSessionMutualFriendsLoader, syncContactTypeCounts])
 
   useEffect(() => {
     if (!isExportRoute) return
@@ -3630,10 +3698,7 @@ function ExportPage() {
     const hasFreshSessionSnapshot = hasBaseConfigReadyRef.current &&
       sessionsRef.current.length > 0 &&
       now - sessionsHydratedAtRef.current <= EXPORT_REENTER_SESSION_SOFT_REFRESH_MS
-    const hasFreshSnsSnapshot = hasSeededSnsStatsRef.current &&
-      now - snsStatsHydratedAtRef.current <= EXPORT_REENTER_SNS_SOFT_REFRESH_MS
-
-    void loadBaseConfig()
+    const baseConfigPromise = loadBaseConfig()
     void ensureSharedTabCountsLoaded()
     if (!hasFreshSessionSnapshot) {
       void loadSessions()
@@ -3641,9 +3706,14 @@ function ExportPage() {
 
     // 朋友圈统计延后一点加载，避免与首屏会话初始化抢占。
     const timer = window.setTimeout(() => {
-      if (!hasFreshSnsSnapshot) {
-        void loadSnsStats({ full: true })
-      }
+      void (async () => {
+        await baseConfigPromise
+        const hasFreshSnsSnapshot = hasSeededSnsStatsRef.current &&
+          Date.now() - snsStatsHydratedAtRef.current <= EXPORT_REENTER_SNS_SOFT_REFRESH_MS
+        if (!hasFreshSnsSnapshot) {
+          void loadSnsStats({ full: true })
+        }
+      })()
     }, 120)
 
     return () => window.clearTimeout(timer)
@@ -4988,9 +5058,14 @@ function ExportPage() {
         window.clearTimeout(sessionMutualFriendsBackgroundFeedTimerRef.current)
         sessionMutualFriendsBackgroundFeedTimerRef.current = null
       }
+      if (sessionMutualFriendsPersistTimerRef.current) {
+        window.clearTimeout(sessionMutualFriendsPersistTimerRef.current)
+        sessionMutualFriendsPersistTimerRef.current = null
+      }
       void flushSessionMediaMetricCache()
+      void flushSessionMutualFriendsCache()
     }
-  }, [flushSessionMediaMetricCache])
+  }, [flushSessionMediaMetricCache, flushSessionMutualFriendsCache])
 
   const contactByUsername = useMemo(() => {
     const map = new Map<string, ContactInfo>()
@@ -5254,6 +5329,23 @@ function ExportPage() {
         console.error('导出页读取会话统计缓存失败:', error)
       }
 
+      try {
+        const relationCacheResult = await window.electronAPI.chat.getExportSessionStats(
+          [normalizedSessionId],
+          { includeRelations: true, allowStaleCache: true, cacheOnly: true }
+        )
+        if (requestSeq !== detailRequestSeqRef.current) return
+        if (relationCacheResult.success && relationCacheResult.data) {
+          const relationMetric = relationCacheResult.data[normalizedSessionId] as SessionExportMetric | undefined
+          const relationCacheMeta = relationCacheResult.cache?.[normalizedSessionId] as SessionExportCacheMeta | undefined
+          if (relationMetric) {
+            applySessionDetailStats(normalizedSessionId, relationMetric, relationCacheMeta, true)
+          }
+        }
+      } catch (error) {
+        console.error('导出页读取会话关系缓存失败:', error)
+      }
+
       const lastPreciseAt = sessionPreciseRefreshAtRef.current[preciseCacheKey] || 0
       const hasRecentPrecise = Date.now() - lastPreciseAt <= DETAIL_PRECISE_REFRESH_COOLDOWN_MS
       const shouldRunPreciseRefresh = !hasRecentPrecise && (!quickMetric || Boolean(quickCacheMeta?.stale))
@@ -5302,16 +5394,36 @@ function ExportPage() {
     }
   }, [applySessionDetailStats, contactByUsername, mergeSessionContentMetrics, sessionContentMetrics, sessionMessageCounts, sessionRowByUsername])
 
-  const loadSessionRelationStats = useCallback(async () => {
+  const loadSessionRelationStats = useCallback(async (options?: { forceRefresh?: boolean }) => {
     const normalizedSessionId = String(sessionDetail?.wxid || '').trim()
     if (!normalizedSessionId || isLoadingSessionRelationStats) return
 
     const requestSeq = detailRequestSeqRef.current
+    const forceRefresh = options?.forceRefresh === true
     setIsLoadingSessionRelationStats(true)
     try {
+      if (!forceRefresh) {
+        const relationCacheResult = await window.electronAPI.chat.getExportSessionStats(
+          [normalizedSessionId],
+          { includeRelations: true, allowStaleCache: true, cacheOnly: true }
+        )
+        if (requestSeq !== detailRequestSeqRef.current) return
+
+        const relationMetric = relationCacheResult.success && relationCacheResult.data
+          ? relationCacheResult.data[normalizedSessionId] as SessionExportMetric | undefined
+          : undefined
+        const relationCacheMeta = relationCacheResult.success
+          ? relationCacheResult.cache?.[normalizedSessionId] as SessionExportCacheMeta | undefined
+          : undefined
+        if (relationMetric) {
+          applySessionDetailStats(normalizedSessionId, relationMetric, relationCacheMeta, true)
+          return
+        }
+      }
+
       const relationResult = await window.electronAPI.chat.getExportSessionStats(
         [normalizedSessionId],
-        { includeRelations: true, forceRefresh: true, preferAccurateSpecialTypes: true }
+        { includeRelations: true, forceRefresh, preferAccurateSpecialTypes: true }
       )
       if (requestSeq !== detailRequestSeqRef.current) return
 
@@ -5332,6 +5444,60 @@ function ExportPage() {
       }
     }
   }, [applySessionDetailStats, isLoadingSessionRelationStats, sessionDetail?.wxid])
+
+  const handleRefreshTableData = useCallback(async () => {
+    const scopeKey = await ensureExportCacheScope()
+
+    resetSessionMutualFriendsLoader()
+    sessionMutualFriendsMetricsRef.current = {}
+    setSessionMutualFriendsMetrics({})
+    closeSessionMutualFriendsDialog()
+    try {
+      await configService.clearExportSessionMutualFriendsCache(scopeKey)
+    } catch (error) {
+      console.error('清理导出页共同好友缓存失败:', error)
+    }
+
+    if (isSessionCountStageReady) {
+      const visibleTargetIds = collectVisibleSessionMutualFriendsTargets(filteredContacts)
+      const visibleTargetSet = new Set(visibleTargetIds)
+      const remainingTargetIds = sessionsRef.current
+        .filter((session) => session.hasSession && isSingleContactSession(session.username) && !visibleTargetSet.has(session.username))
+        .map((session) => session.username)
+
+      if (visibleTargetIds.length > 0) {
+        enqueueSessionMutualFriendsRequests(visibleTargetIds, { front: true })
+      }
+      if (remainingTargetIds.length > 0) {
+        enqueueSessionMutualFriendsRequests(remainingTargetIds)
+      }
+      scheduleSessionMutualFriendsWorker()
+    }
+
+    await Promise.all([
+      loadContactsList({ scopeKey }),
+      loadSnsStats({ full: true }),
+      loadSnsUserPostCounts({ force: true })
+    ])
+
+    if (String(sessionDetail?.wxid || '').trim()) {
+      void loadSessionRelationStats({ forceRefresh: true })
+    }
+  }, [
+    closeSessionMutualFriendsDialog,
+    collectVisibleSessionMutualFriendsTargets,
+    enqueueSessionMutualFriendsRequests,
+    ensureExportCacheScope,
+    filteredContacts,
+    isSessionCountStageReady,
+    loadContactsList,
+    loadSessionRelationStats,
+    loadSnsStats,
+    loadSnsUserPostCounts,
+    resetSessionMutualFriendsLoader,
+    scheduleSessionMutualFriendsWorker,
+    sessionDetail?.wxid
+  ])
 
   useEffect(() => {
     if (!showSessionDetailPanel || !sessionDetailSupportsSnsTimeline) return
@@ -6371,7 +6537,7 @@ function ExportPage() {
                     </button>
                   )}
                 </div>
-                <button className="secondary-btn" onClick={() => void loadContactsList()} disabled={isContactsListLoading}>
+                <button className="secondary-btn" onClick={() => void handleRefreshTableData()} disabled={isContactsListLoading}>
                   <RefreshCw size={14} className={isContactsListLoading ? 'spin' : ''} />
                   刷新
                 </button>
@@ -6468,7 +6634,7 @@ function ExportPage() {
                           <li>可能原因3：数据库连接状态异常或 IPC 调用卡住。</li>
                         </ul>
                         <div className="issue-actions">
-                          <button className="issue-btn primary" onClick={() => void loadContactsList()}>
+                          <button className="issue-btn primary" onClick={() => void handleRefreshTableData()}>
                             <RefreshCw size={14} />
                             <span>重试加载</span>
                           </button>
