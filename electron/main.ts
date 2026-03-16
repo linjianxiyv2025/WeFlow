@@ -97,6 +97,7 @@ let mainWindowReady = false
 let shouldShowMain = true
 let isAppQuitting = false
 let tray: Tray | null = null
+let isClosePromptVisible = false
 
 // 更新下载状态管理（Issue #294 修复）
 let isDownloadInProgress = false
@@ -354,10 +355,14 @@ function createWindow(options: { autoShow?: boolean } = {}) {
   })
 
   win.on('close', (e) => {
-    if (isAppQuitting) return
-    // 关闭主窗口时隐藏到状态栏而不是退出
+    if (isAppQuitting || win !== mainWindow) return
     e.preventDefault()
-    win.hide()
+    if (isClosePromptVisible) return
+
+    isClosePromptVisible = true
+    win.webContents.send('window:confirmCloseRequested', {
+      canMinimizeToTray: Boolean(tray)
+    })
   })
 
   win.on('closed', () => {
@@ -365,6 +370,7 @@ function createWindow(options: { autoShow?: boolean } = {}) {
 
     mainWindow = null
     mainWindowReady = false
+    isClosePromptVisible = false
 
     if (process.platform !== 'darwin' && !isAppQuitting) {
       destroyNotificationWindow()
@@ -1152,6 +1158,33 @@ function registerIpcHandlers() {
 
   ipcMain.on('window:close', (event) => {
     BrowserWindow.fromWebContents(event.sender)?.close()
+  })
+
+  ipcMain.handle('window:respondCloseConfirm', async (_event, action: 'tray' | 'quit' | 'cancel') => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      isClosePromptVisible = false
+      return false
+    }
+
+    try {
+      if (action === 'tray') {
+        if (tray) {
+          mainWindow.hide()
+          return true
+        }
+        return false
+      }
+
+      if (action === 'quit') {
+        isAppQuitting = true
+        app.quit()
+        return true
+      }
+
+      return true
+    } finally {
+      isClosePromptVisible = false
+    }
   })
 
   // 更新窗口控件主题色

@@ -94,6 +94,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('window:maximizeStateChanged', listener)
     },
     close: () => ipcRenderer.send('window:close'),
+    onCloseConfirmRequested: (callback: (payload: { canMinimizeToTray: boolean }) => void) => {
+      const listener = (_: unknown, payload: { canMinimizeToTray: boolean }) => callback(payload)
+      ipcRenderer.on('window:confirmCloseRequested', listener)
+      return () => ipcRenderer.removeListener('window:confirmCloseRequested', listener)
+    },
+    respondCloseConfirm: (action: 'tray' | 'quit' | 'cancel') =>
+      ipcRenderer.invoke('window:respondCloseConfirm', action),
     openAgreementWindow: () => ipcRenderer.invoke('window:openAgreementWindow'),
     completeOnboarding: () => ipcRenderer.invoke('window:completeOnboarding'),
     openOnboardingWindow: () => ipcRenderer.invoke('window:openOnboardingWindow'),

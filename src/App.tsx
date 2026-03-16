@@ -37,6 +37,7 @@ import LockScreen from './components/LockScreen'
 import { GlobalSessionMonitor } from './components/GlobalSessionMonitor'
 import { BatchTranscribeGlobal } from './components/BatchTranscribeGlobal'
 import { BatchImageDecryptGlobal } from './components/BatchImageDecryptGlobal'
+import WindowCloseDialog from './components/WindowCloseDialog'
 
 function RouteStateRedirect({ to }: { to: string }) {
   const location = useLocation()
@@ -85,6 +86,8 @@ function App() {
   const isExportRoute = routeLocation.pathname === '/export'
   const [themeHydrated, setThemeHydrated] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [showCloseDialog, setShowCloseDialog] = useState(false)
+  const [canMinimizeToTray, setCanMinimizeToTray] = useState(false)
 
   // 锁定状态
   // const [isLocked, setIsLocked] = useState(false) // Moved to store
@@ -106,6 +109,15 @@ function App() {
       settingsBackgroundRef.current = location
     }
   }, [location])
+
+  useEffect(() => {
+    const removeCloseConfirmListener = window.electronAPI.window.onCloseConfirmRequested((payload) => {
+      setCanMinimizeToTray(Boolean(payload.canMinimizeToTray))
+      setShowCloseDialog(true)
+    })
+
+    return () => removeCloseConfirmListener()
+  }, [])
 
   useEffect(() => {
     const root = document.documentElement
@@ -313,6 +325,15 @@ function App() {
 
   const dismissUpdate = () => {
     setUpdateInfo(null)
+  }
+
+  const handleWindowCloseAction = async (action: 'tray' | 'quit' | 'cancel') => {
+    setShowCloseDialog(false)
+    try {
+      await window.electronAPI.window.respondCloseConfirm(action)
+    } catch (error) {
+      console.error('处理关闭确认失败:', error)
+    }
   }
 
   // 启动时自动检查配置并连接数据库
@@ -591,6 +612,14 @@ function App() {
         onIgnore={handleIgnoreUpdate}
         isDownloading={isDownloading}
         progress={downloadProgress}
+      />
+
+      <WindowCloseDialog
+        open={showCloseDialog}
+        canMinimizeToTray={canMinimizeToTray}
+        onTray={() => handleWindowCloseAction('tray')}
+        onQuit={() => handleWindowCloseAction('quit')}
+        onCancel={() => handleWindowCloseAction('cancel')}
       />
 
       <div className="main-layout">
