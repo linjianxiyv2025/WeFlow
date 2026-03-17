@@ -1,0 +1,54 @@
+name: Auto Sync Upstream
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # 每10分钟运行一次
+  workflow_dispatch:       # 允许手动触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史记录，这对合并至关重要
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/hicccc77/WeFlow.git
+          git fetch upstream main
+
+      - name: Configure Git User
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream changes
+        id: merge_step
+        run: |
+          # 尝试合并。如果发生冲突，git merge 会返回非零退出码，导致 Step 失败，Workflow 停止。
+          # 去掉了 --allow-unrelated-histories，除非你非常确定需要它。
+          # 如果确实是第一次合并且无共同历史，请取消下面注释中的 --allow-unrelated-histories
+          
+          if ! git merge upstream/main --strategy-option=theirs; then
+            echo "::error::Merge conflict detected! Please resolve manually."
+            exit 1
+          fi
+          
+          # 检查是否有实际变化需要提交
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No changes to commit."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "Changes detected."
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push changes
+        if: steps.merge_step.outputs.has_changes == 'true'
+        run: |
+          # 直接使用 git push，比第三方 action 更可靠
+          # 使用 --force-with-lease 通常更安全，但在纯合并场景下普通 push 即可
+          git push origin main
